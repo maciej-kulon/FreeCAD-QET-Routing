@@ -53,6 +53,7 @@ class WorkbenchPackagingTests(unittest.TestCase):
             commands.ImportQetCommand(),
             commands.PlaceTerminalCommand(),
             commands.CreateCorridorCommand(),
+            commands.CreateCorridorFromPointsCommand(),
             commands.RouteWiresCommand(),
             commands.WireScheduleCommand(),
         )
@@ -60,6 +61,71 @@ class WorkbenchPackagingTests(unittest.TestCase):
         for command in command_objects:
             self.assertTrue(Path(command.GetResources()["Pixmap"]).is_file())
         self.assertEqual(ICON_DIR, ROOT / "Resources" / "Icons")
+
+    def test_corridor_vertex_selection_flattens_world_space_subobjects(self) -> None:
+        class Vector:
+            def __init__(self, x: float, y: float, z: float) -> None:
+                self.x = x
+                self.y = y
+                self.z = z
+
+        class Vertex:
+            ShapeType = "Vertex"
+
+            def __init__(self, point: Vector) -> None:
+                self.Point = point
+
+        vertices = {
+            "Parent.Box.Vertex1": Vertex(Vector(40, -20, 5)),
+            "Parent.Box.Vertex2": Vertex(Vector(100, -20, 5)),
+            "Parent.Box.Vertex3": Vertex(Vector(100, 30, 25)),
+            "Parent.Box.Vertex4": Vertex(Vector(40, 30, 25)),
+        }
+        obj = types.SimpleNamespace(getSubObject=vertices.__getitem__)
+        selection = types.SimpleNamespace(
+            Object=obj,
+            SubElementNames=[
+                "Parent.Box.Vertex1",
+                "Parent.Box.Vertex2",
+                "Parent.Box.Vertex3",
+                "Parent.Box.Vertex4",
+            ],
+        )
+
+        points = commands._selection_world_vertices([selection])
+
+        self.assertEqual(
+            [(point.x, point.y, point.z) for point in points],
+            [
+                (40, -20, 5),
+                (100, -20, 5),
+                (100, 30, 25),
+                (40, 30, 25),
+            ],
+        )
+
+    def test_corridor_vertex_selection_rejects_non_vertices(self) -> None:
+        first_vertex = types.SimpleNamespace(
+            ShapeType="Vertex",
+            Point=types.SimpleNamespace(x=1.0, y=2.0, z=3.0),
+        )
+        second_vertex = types.SimpleNamespace(
+            ShapeType="Vertex",
+            Point=types.SimpleNamespace(x=4.0, y=5.0, z=6.0),
+        )
+        edge = types.SimpleNamespace(ShapeType="Edge")
+        geometry = {
+            "Vertex1": first_vertex,
+            "Vertex2": second_vertex,
+            "Edge1": edge,
+        }
+        selection = types.SimpleNamespace(
+            Object=types.SimpleNamespace(getSubObject=geometry.__getitem__),
+            SubElementNames=["Vertex1", "Vertex2", "Edge1"],
+        )
+
+        with self.assertRaisesRegex(ValueError, "vertices only"):
+            commands._selection_world_vertices([selection])
 
     def test_gui_entrypoint_registers_expected_workbench(self) -> None:
         registered = []

@@ -17,7 +17,8 @@ patch of FreeCAD.
 - propagates an inherited terminal move to every instance of the same part
   type, with an instance override when required;
 - clamps moved terminals to the owning part's local bounding box;
-- creates translucent, axis-aligned routing corridors;
+- creates translucent, axis-aligned cable-tray routing corridors, either from
+  editable dimensions or from two to eight selected vertices;
 - filters corridors by conductor section and bundle fill capacity;
 - routes multiline conductors with A* and creates persistent
   `Part::FeaturePython` wire centerlines;
@@ -59,8 +60,12 @@ search path. FreeCAD 1.0 discovers the namespaced
    then run **Place terminal on selected geometry**. Editing the terminal's
    `Placement` directly also works. Its shared `LocalPosition` updates every
    matching part instance; set `PositionMode` to `Overridden` for an exception.
-4. Create corridors and edit their `Length`, `Width`, `Height`, `Placement`,
-   `AllowedSections`, `Capacity`, and `MaxFillPercent`.
+4. Create cable-tray routing volumes with **Create routing corridor**, or
+   select two opposite corners (up to all eight corners) and run
+   **Create corridor from selected points**. The selected-point command takes
+   a static world-coordinate snapshot and requires an axis-aligned box.
+   Edit `Length`, `Width`, `Height`, `Placement`, `AllowedSections`,
+   `Capacity`, and `MaxFillPercent` as needed.
 5. Set a conductor's `OuterDiameter` when bundle occupancy should use insulated
    diameter instead of copper cross-section.
 6. Run **Route multiline conductors**.
@@ -76,7 +81,10 @@ identity. They are never treated as physical 3D pin locations.
 - Routes are centerlines; bend radii, wire solids, clips, ducts, and obstacle
   avoidance are not implemented yet. Wires may share the same centerline; no
   clearance or lane-allocation rules are enforced.
-- Terminal lead-ins connect each part to its nearest eligible corridor.
+- Terminal lead-ins and lead-outs are straight free-space segments to the
+  nearest point on an eligible corridor and are included in geometric length.
+  They do not yet avoid cabinet obstacles or enforce an exit direction,
+  clearance, bend radius, or maximum unsupported distance.
 - Every QET multiline conductor endpoint pair becomes one physical wire.
 - QET single-line conductors require a future explicit physical-core expansion
   workflow.
@@ -130,8 +138,9 @@ rg QET_ROUTING_GUI_SMOKE_OK /tmp/qet-routing-gui.log
 ```
 
 The probe verifies that FreeCAD auto-discovered the workbench before the test
-imports any QET Routing module, activates it, checks all five commands, and
-then closes FreeCAD normally. FreeCAD 1.1.2 on macOS has an upstream shutdown
+imports any QET Routing module, activates it, checks all six commands, creates
+a corridor from selected vertices, and then closes FreeCAD normally. FreeCAD
+1.1.2 on macOS has an upstream shutdown
 abort in its `--run-test` path, so that option is intentionally not used here.
 
 ## Code layout

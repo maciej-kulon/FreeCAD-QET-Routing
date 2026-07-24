@@ -47,13 +47,39 @@ try:
     k2.Label = "K2"
     k2.Shape = Part.makeBox(20, 10, 10)
     k2.Placement.Base = FreeCAD.Vector(150, 0, 0)
+
+    corridor_reference = probe_document.addObject(
+        "Part::Feature",
+        "CorridorReference",
+    )
+    corridor_reference.Label = "Corridor reference"
+    corridor_reference.Shape = Part.makeBox(100, 50, 50)
+    corridor_reference.Placement.Base = FreeCAD.Vector(90, 0, 0)
     probe_document.recompute()
+
+    Gui.Selection.clearSelection()
+    for vertex_index in range(1, 9):
+        Gui.Selection.addSelection(
+            corridor_reference,
+            f"Vertex{vertex_index}",
+        )
+    Gui.runCommand("QetRouting_CreateCorridorFromPoints")
+    selected_objects = Gui.Selection.getSelection()
+    assert len(selected_objects) == 1
+    second_corridor = selected_objects[0]
+    assert second_corridor.QET_ObjectKind == "RoutingCorridor"
+    assert tuple(second_corridor.Placement.Base) == (90.0, 0.0, 0.0)
+    point_corridor_dimensions = (
+        second_corridor.Length.Value,
+        second_corridor.Width.Value,
+        second_corridor.Height.Value,
+    )
+    assert point_corridor_dimensions == (100.0, 50.0, 50.0)
+    assert abs(float(second_corridor.Placement.Rotation.Angle)) <= 1e-9
 
     fixture = Path(__file__).parent / "fixtures" / "current.qet"
     import_summary = import_project(probe_document, parse_qet(fixture).project)
     assert import_summary.terminal_count == 4
-    second_corridor = create_corridor(probe_document)
-    second_corridor.Placement.Base = FreeCAD.Vector(90, 0, 0)
     probe_document.recompute()
     routing_summary = route_wires(probe_document)
     assert routing_summary.routed_count == 1

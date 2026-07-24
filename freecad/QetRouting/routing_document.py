@@ -26,6 +26,7 @@ from .routing import (
     Point3,
     RoutingError,
     WireRequest,
+    axis_aligned_box_from_points,
 )
 
 ROUTING_NETWORK_NAME = "QETRoutingNetwork"
@@ -173,11 +174,58 @@ def create_corridor(
         raise
 
 
+def create_corridor_from_points(
+    document: Any,
+    points: list[Any] | tuple[Any, ...],
+    *,
+    use_transaction: bool = True,
+) -> Any:
+    """Create an axis-aligned corridor spanning selected world-space points."""
+
+    import FreeCAD as App
+
+    if document is None:
+        raise ValueError("A FreeCAD document is required")
+    try:
+        point_values = tuple(
+            Point3(float(point.x), float(point.y), float(point.z)) for point in points
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("Selected geometry does not provide valid 3D points") from exc
+    box = axis_aligned_box_from_points(point_values)
+    dimensions = (
+        box.maximum.x - box.minimum.x,
+        box.maximum.y - box.minimum.y,
+        box.maximum.z - box.minimum.z,
+    )
+
+    transaction_open = False
+    if use_transaction:
+        document.openTransaction("Create QET routing corridor from points")
+        transaction_open = True
+    try:
+        corridor = _create_corridor_object(
+            document,
+            *dimensions,
+            base=App.Vector(*box.minimum.as_tuple()),
+        )
+        if transaction_open:
+            document.commitTransaction()
+            transaction_open = False
+        return corridor
+    except Exception:
+        if transaction_open:
+            document.abortTransaction()
+        raise
+
+
 def _create_corridor_object(
     document: Any,
     length: float,
     width: float,
     height: float,
+    *,
+    base: Any | None = None,
 ) -> Any:
     root = _ensure_group(document, ROOT_NAME, "QET Routing")
     network = _ensure_group(
@@ -235,6 +283,10 @@ def _create_corridor_object(
     obj.addProperty("App::PropertyBool", "Enabled", "Routing Rules")
     obj.Enabled = True
     RoutingCorridorProxy(obj)
+    if base is not None:
+        placement = obj.Placement
+        placement.Base = base
+        obj.Placement = placement
     corridors.addObject(obj)
     view_object, _repaired = _ensure_native_part_view_provider(obj)
     if view_object is not None:

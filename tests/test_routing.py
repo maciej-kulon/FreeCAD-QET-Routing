@@ -12,10 +12,49 @@ from freecad.QetRouting.routing import (
     Point3,
     RoutingError,
     WireRequest,
+    axis_aligned_box_from_points,
 )
 
 
 class CorridorRouterTests(unittest.TestCase):
+    def test_axis_aligned_box_spans_selected_corner_points(self) -> None:
+        box = axis_aligned_box_from_points(
+            [
+                Point3(30, -5, 12),
+                Point3(10, 7, 2),
+                Point3(30, 7, 2),
+                Point3(10, -5, 12),
+                Point3(10, -5, 2),
+                Point3(30, 7, 12),
+                Point3(30, -5, 2),
+                Point3(10, 7, 12),
+            ]
+        )
+
+        self.assertEqual(box.minimum, Point3(10, -5, 2))
+        self.assertEqual(box.maximum, Point3(30, 7, 12))
+
+    def test_axis_aligned_box_rejects_flat_selection(self) -> None:
+        with self.assertRaisesRegex(ValueError, "non-zero distance"):
+            axis_aligned_box_from_points(
+                [Point3(0, 0, 5), Point3(10, 20, 5)]
+            )
+
+    def test_axis_aligned_box_rejects_rotated_corner_set(self) -> None:
+        with self.assertRaisesRegex(ValueError, "axis-aligned box"):
+            axis_aligned_box_from_points(
+                [
+                    Point3(0, 1, 0),
+                    Point3(1, 0, 0),
+                    Point3(2, 1, 0),
+                    Point3(1, 2, 0),
+                    Point3(0, 1, 5),
+                    Point3(1, 0, 5),
+                    Point3(2, 1, 5),
+                    Point3(1, 2, 5),
+                ]
+            )
+
     def test_routes_through_overlapping_corridors(self) -> None:
         router = CorridorRouter(
             [
@@ -42,6 +81,27 @@ class CorridorRouterTests(unittest.TestCase):
         self.assertEqual(result.points[0], Point3(-10, 10, 10))
         self.assertEqual(result.points[-1], Point3(130, 10, 10))
         self.assertAlmostEqual(result.geometric_length, 140.0)
+
+    def test_external_terminals_use_nearest_corridor_surface_points(self) -> None:
+        corridor = CorridorSpec(
+            "tray",
+            Box3(Point3(0, 0, 0), Point3(10, 10, 10)),
+        )
+        start = Point3(-5, 2, 3)
+        end = Point3(16, 8, 7)
+        result = CorridorRouter([corridor]).route(
+            WireRequest("W1", start, end, 1.5)
+        )
+
+        self.assertEqual(result.points[0], start)
+        self.assertEqual(result.points[1], Point3(0, 2, 3))
+        self.assertEqual(result.points[-2], Point3(10, 8, 7))
+        self.assertEqual(result.points[-1], end)
+        expected = sum(
+            left.distance_to(right)
+            for left, right in zip(result.points, result.points[1:])
+        )
+        self.assertAlmostEqual(result.geometric_length, expected)
 
     def test_disconnected_corridors_fail(self) -> None:
         router = CorridorRouter(

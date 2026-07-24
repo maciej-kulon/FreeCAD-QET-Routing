@@ -105,6 +105,56 @@ class Box3:
         return Box3(minimum, maximum)
 
 
+def axis_aligned_box_from_points(
+    points: list[Point3] | tuple[Point3, ...],
+    *,
+    tolerance: float = 1e-7,
+) -> Box3:
+    """Return the non-degenerate world-axis-aligned box spanned by points."""
+
+    if not math.isfinite(tolerance) or tolerance < 0:
+        raise ValueError("Point tolerance must be a finite non-negative value")
+    if len(points) < 2:
+        raise ValueError("Select at least two points")
+    if any(not point.is_finite for point in points):
+        raise ValueError("Selected point coordinates must be finite")
+
+    minimum = Point3(
+        min(point.x for point in points),
+        min(point.y for point in points),
+        min(point.z for point in points),
+    )
+    maximum = Point3(
+        max(point.x for point in points),
+        max(point.y for point in points),
+        max(point.z for point in points),
+    )
+    extents = (
+        maximum.x - minimum.x,
+        maximum.y - minimum.y,
+        maximum.z - minimum.z,
+    )
+    if any(extent <= tolerance for extent in extents):
+        raise ValueError(
+            "Selected points must span a non-zero distance in X, Y, and Z"
+        )
+    for point in points:
+        coordinates = (
+            (point.x, minimum.x, maximum.x),
+            (point.y, minimum.y, maximum.y),
+            (point.z, minimum.z, maximum.z),
+        )
+        if any(
+            min(abs(value - low), abs(value - high)) > tolerance
+            for value, low, high in coordinates
+        ):
+            raise ValueError(
+                "Selected vertices must be corners of an axis-aligned box; "
+                "rotated corridors are not supported yet"
+            )
+    return Box3(minimum, maximum)
+
+
 @dataclass(frozen=True)
 class CorridorSpec:
     key: str

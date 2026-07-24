@@ -12,6 +12,7 @@ COMMANDS = [
     "QetRouting_ImportQET",
     "QetRouting_PlaceTerminal",
     "QetRouting_CreateCorridor",
+    "QetRouting_CreateCorridorFromPoints",
     "QetRouting_RouteWires",
     "QetRouting_WireSchedule",
 ]
@@ -132,6 +133,66 @@ class CreateCorridorCommand:
         Gui.activeDocument().activeView().fitAll()
 
 
+class CreateCorridorFromPointsCommand:
+    def GetResources(self) -> dict[str, str]:
+        return {
+            "Pixmap": str(ICON_DIR / "CreateCorridorFromPoints.svg"),
+            "MenuText": "Create corridor from selected points",
+            "ToolTip": (
+                "Create an axis-aligned cable-tray routing corridor from "
+                "two to eight selected vertices"
+            ),
+        }
+
+    def IsActive(self) -> bool:
+        import FreeCAD as App
+
+        return App.ActiveDocument is not None
+
+    def Activated(self) -> None:
+        import FreeCAD as App
+        import FreeCADGui as Gui
+        from PySide import QtWidgets
+
+        from .routing_document import create_corridor_from_points
+
+        try:
+            selections = Gui.Selection.getSelectionEx(App.ActiveDocument.Name, 0)
+            points = _selection_world_vertices(selections)
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(
+                None,
+                "Create QET corridor from points",
+                str(exc),
+            )
+            return
+        try:
+            corridor = create_corridor_from_points(App.ActiveDocument, points)
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(
+                None,
+                "Create QET corridor from points",
+                f"Cannot create corridor: {exc}",
+            )
+            return
+        except Exception as exc:
+            App.Console.PrintError(
+                "QET Routing corridor creation failed:\n"
+                + traceback.format_exc()
+                + "\n"
+            )
+            QtWidgets.QMessageBox.critical(
+                None,
+                "Create QET corridor from points",
+                f"Corridor creation failed: {exc}",
+            )
+            return
+
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(corridor)
+        Gui.activeDocument().activeView().fitAll()
+
+
 class PlaceTerminalCommand:
     def GetResources(self) -> dict[str, str]:
         return {
@@ -153,7 +214,7 @@ class PlaceTerminalCommand:
         import FreeCADGui as Gui
         from PySide import QtWidgets
 
-        selections = Gui.Selection.getSelectionEx()
+        selections = Gui.Selection.getSelectionEx(App.ActiveDocument.Name, 0)
         terminals = [
             item.Object
             for item in selections
@@ -292,8 +353,9 @@ def register() -> None:
     Gui.addCommand(COMMANDS[0], ImportQetCommand())
     Gui.addCommand(COMMANDS[1], PlaceTerminalCommand())
     Gui.addCommand(COMMANDS[2], CreateCorridorCommand())
-    Gui.addCommand(COMMANDS[3], RouteWiresCommand())
-    Gui.addCommand(COMMANDS[4], WireScheduleCommand())
+    Gui.addCommand(COMMANDS[3], CreateCorridorFromPointsCommand())
+    Gui.addCommand(COMMANDS[4], RouteWiresCommand())
+    Gui.addCommand(COMMANDS[5], WireScheduleCommand())
     _REGISTERED = True
 
 
@@ -304,7 +366,8 @@ def _selection_world_point(selection: object) -> object | None:
     subobjects = list(getattr(selection, "SubObjects", []))
     if len(subobjects) > 1:
         return None
-    geometry = subobjects[0] if subobjects else getattr(obj, "Shape", None)
+    subobject_selected = bool(subobjects)
+    geometry = subobjects[0] if subobject_selected else getattr(obj, "Shape", None)
     if geometry is None:
         return None
     if hasattr(geometry, "Point"):
@@ -316,8 +379,71 @@ def _selection_world_point(selection: object) -> object | None:
             local_point = geometry.BoundBox.Center
         except (AttributeError, RuntimeError):
             return None
+    if subobject_selected:
+        return local_point
     try:
         placement = obj.getGlobalPlacement()
     except (AttributeError, RuntimeError):
         placement = obj.Placement
     return placement.multVec(local_point)
+
+
+def _selection_world_vertices(
+    selections: list[object] | tuple[object, ...],
+    *,
+    tolerance: float = 1e-7,
+) -> list[object]:
+    """Collect unique world-space vertices from GUI selection records."""
+
+    selected = [
+        (getattr(selection, "Object", None), str(subelement_name))
+        for selection in selections
+        for subelement_name in list(
+            getattr(selection, "SubElementNames", [])
+        )
+    ]
+    if not 2 <= len(selected) <= 8:
+        raise ValueError(
+            "Select 2 to 8 vertices in the active document. "
+            f"Two opposite corners are sufficient. Selected: {len(selected)}."
+        )
+
+    result: list[object] = []
+    tolerance_squared = tolerance * tolerance
+    for obj, subelement_name in selected:
+        if obj is None:
+            raise ValueError("A selected vertex no longer belongs to an object")
+        leaf_name = subelement_name.rstrip(".").rsplit(".", 1)[-1]
+        if not leaf_name.startswith("Vertex"):
+            raise ValueError(
+                "Select vertices only; edges, faces, and whole objects are not accepted"
+            )
+        try:
+            geometry = obj.getSubObject(subelement_name)
+        except (AttributeError, KeyError, RuntimeError, TypeError) as exc:
+            raise ValueError(
+                f"Could not resolve selected vertex {subelement_name!r}"
+            ) from exc
+        if (
+            geometry is None
+            or str(getattr(geometry, "ShapeType", "")) != "Vertex"
+            or not hasattr(geometry, "Point")
+        ):
+            raise ValueError(
+                f"Selected subelement {subelement_name!r} is not a vertex"
+            )
+        world_point = geometry.Point
+        if any(
+            (
+                (float(world_point.x) - float(existing.x)) ** 2
+                + (float(world_point.y) - float(existing.y)) ** 2
+                + (float(world_point.z) - float(existing.z)) ** 2
+            )
+            <= tolerance_squared
+            for existing in result
+        ):
+            continue
+        result.append(world_point)
+    if len(result) < 2:
+        raise ValueError("Select at least two distinct vertex positions")
+    return result

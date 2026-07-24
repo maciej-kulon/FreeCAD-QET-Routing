@@ -17,6 +17,7 @@ from freecad.QetRouting.qet import parse_qet, parse_qet_bytes
 from freecad.QetRouting.routing import RoutingError
 from freecad.QetRouting.routing_document import (
     create_corridor,
+    create_corridor_from_points,
     create_wire_schedule,
     route_wires,
 )
@@ -40,11 +41,11 @@ k2.Shape = Part.makeBox(20, 10, 10)
 k2.Placement.Base = App.Vector(100, 0, 0)
 document.recompute()
 
-vertex = k2.Shape.Vertexes[0]
+vertex = k2.getSubObject("Vertex1")
 picked_world = _selection_world_point(
     SimpleNamespace(Object=k2, SubObjects=[vertex])
 )
-expected_world = k2.getGlobalPlacement().multVec(vertex.Point)
+expected_world = vertex.Point
 assert _near(picked_world, expected_world)
 
 summary = import_project(document, parsed.project)
@@ -117,8 +118,15 @@ document.recompute()
 assert _near(terminals["K1.A1"].WorldPosition, (4, 4, 4))
 
 corridor_1 = create_corridor(document, length=60, width=20, height=20)
-corridor_2 = create_corridor(document, length=70, width=20, height=20)
-corridor_2.Placement.Base = App.Vector(50, 0, 0)
+corridor_2 = create_corridor_from_points(
+    document,
+    [App.Vector(120, 20, 20), App.Vector(50, 0, 0)],
+)
+assert _near(corridor_2.Placement.Base, (50, 0, 0))
+assert _near(
+    (corridor_2.Length.Value, corridor_2.Width.Value, corridor_2.Height.Value),
+    (70, 20, 20),
+)
 document.recompute()
 
 routing_summary = route_wires(document)
@@ -328,5 +336,36 @@ assert duplicate_summary.matched_count == 0
 assert duplicate_summary.ambiguous_count == 2
 assert duplicate_summary.routeable_conductor_count == 0
 App.closeDocument(duplicate_document.Name)
+
+# Free-space terminal lead-ins and lead-outs are included in route length.
+lead_document = App.newDocument("QetRoutingLeadLengthSmoke")
+lead_k1 = lead_document.addObject("Part::Feature", "K1")
+lead_k1.Label = "K1"
+lead_k1.Shape = Part.makeBox(20, 10, 10)
+lead_k2 = lead_document.addObject("Part::Feature", "K2")
+lead_k2.Label = "K2"
+lead_k2.Shape = Part.makeBox(20, 10, 10)
+lead_k2.Placement.Base = App.Vector(200, 0, 0)
+lead_document.recompute()
+import_project(lead_document, parsed.project)
+create_corridor_from_points(
+    lead_document,
+    [App.Vector(50, 0, 0), App.Vector(150, 10, 10)],
+)
+lead_summary = route_wires(lead_document)
+assert lead_summary.routed_count == 1
+assert abs(lead_summary.total_geometric_length_mm - 200) < 1e-7
+lead_route = next(
+    item
+    for item in lead_document.Objects
+    if getattr(item, "QET_ObjectKind", "") == "WireRoute"
+)
+assert abs(lead_route.Shape.Length - 200) < 1e-7
+assert abs(lead_route.GeometricLength.Value - 200) < 1e-7
+lead_route.SlackPercent = 10
+lead_route.EndAllowanceEach = 5
+lead_document.recompute()
+assert abs(lead_route.CutLength.Value - 230) < 1e-7
+App.closeDocument(lead_document.Name)
 
 print("QET_ROUTING_FREECAD_SMOKE_OK")
