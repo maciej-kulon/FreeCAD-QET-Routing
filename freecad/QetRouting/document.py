@@ -577,7 +577,7 @@ def _ensure_binding(
         parent=instances_group,
         kind="DeviceBinding",
     )
-    _set_link(obj, "Target", target, "QET Device Binding")
+    _set_global_link(obj, "Target", target, "QET Device Binding")
     _set_link(obj, "DeviceType", type_object, "QET Device Binding")
     _set_string(obj, "QETElementUUID", element.uuid, "QET Device Binding")
     _set_string(obj, "QETElementType", element.type_path, "QET Device Binding")
@@ -629,7 +629,7 @@ def _ensure_terminal_marker(
     )
     if created or not isinstance(getattr(obj, "Proxy", None), TerminalMarkerProxy):
         TerminalMarkerProxy(obj)
-    _set_link(obj, "Owner", target, "QET Terminal")
+    _set_global_link(obj, "Owner", target, "QET Terminal")
     _set_link(obj, "Definition", definition, "QET Terminal")
     _set_string(obj, "QETElementUUID", element.uuid, "QET Terminal")
     _set_string(obj, "QETTerminalUUID", terminal.definition_uuid, "QET Terminal")
@@ -937,6 +937,21 @@ def _set_link(obj: Any, name: str, value: Any, group: str) -> None:
     setattr(obj, name, value)
 
 
+def _set_global_link(obj: Any, name: str, value: Any, group: str) -> None:
+    """Set a link that may cross an App::Part/Assembly coordinate scope."""
+
+    if name in obj.PropertiesList:
+        try:
+            property_type = obj.getTypeIdOfProperty(name)
+        except (AttributeError, RuntimeError):
+            property_type = ""
+        if property_type != "App::PropertyLinkGlobal":
+            obj.removeProperty(name)
+    if name not in obj.PropertiesList:
+        obj.addProperty("App::PropertyLinkGlobal", name, group)
+    setattr(obj, name, value)
+
+
 def _set_bool(obj: Any, name: str, value: bool, group: str) -> None:
     if name not in obj.PropertiesList:
         obj.addProperty("App::PropertyBool", name, group)
@@ -978,6 +993,11 @@ def _shape_center(target: Any, app_module: Any) -> Any:
 
 
 def _is_supported_target(obj: Any) -> bool:
+    # Physical terminal owners need a coordinate system. Assembly joint/BOM/
+    # view groups and plain document groups are containers without Placement;
+    # they must not become candidates merely because they contain other data.
+    if "Placement" not in getattr(obj, "PropertiesList", []):
+        return False
     return _target_local_bounds(obj) is not None
 
 
@@ -989,7 +1009,7 @@ def _target_local_bounds(target: Any) -> tuple[Any, Any] | None:
     try:
         shape = target.Shape
         if shape is not None and not shape.isNull():
-            box = shape.BoundBox
+            box = _shape_owner_local_bound_box(target, shape)
             return (
                 App.Vector(box.XMin, box.YMin, box.ZMin),
                 App.Vector(box.XMax, box.YMax, box.ZMax),
@@ -997,9 +1017,7 @@ def _target_local_bounds(target: Any) -> tuple[Any, Any] | None:
     except (AttributeError, RuntimeError):
         pass
 
-    owner_placement = _global_placement(target)
-    owner_inverse = owner_placement.inverse()
-    points: list[Any] = []
+    world_points: list[Any] = []
     visited: set[str] = set()
     pending = list(getattr(target, "Group", []))
     while pending:
@@ -1013,17 +1031,19 @@ def _target_local_bounds(target: Any) -> tuple[Any, Any] | None:
             shape = child.Shape
             if shape is None or shape.isNull():
                 continue
-            box = shape.BoundBox
+            box = _shape_owner_local_bound_box(child, shape)
             child_placement = _global_placement(child)
             for x in (box.XMin, box.XMax):
                 for y in (box.YMin, box.YMax):
                     for z in (box.ZMin, box.ZMax):
                         world = child_placement.multVec(App.Vector(x, y, z))
-                        points.append(owner_inverse.multVec(world))
+                        world_points.append(world)
         except (AttributeError, RuntimeError):
             continue
-    if not points:
+    if not world_points:
         return None
+    owner_inverse = _global_placement(target).inverse()
+    points = [owner_inverse.multVec(point) for point in world_points]
     minimum = App.Vector(
         min(point.x for point in points),
         min(point.y for point in points),
@@ -1035,6 +1055,21 @@ def _target_local_bounds(target: Any) -> tuple[Any, Any] | None:
         max(point.z for point in points),
     )
     return minimum, maximum
+
+
+def _shape_owner_local_bound_box(owner: Any, shape: Any) -> Any:
+    """Return shape bounds in the owning object's local coordinate system.
+
+    FreeCAD exposes ``Shape.BoundBox`` after the shape's Placement, including
+    for App::Link. Terminal definitions, however, are stored in owner-local
+    coordinates and are transformed by ``_global_placement`` later. Preserve
+    any transform inherited from an App::Link source while removing the
+    owner's own local Placement.
+    """
+
+    local_shape = shape.copy()
+    local_shape.Placement = owner.Placement.inverse().multiply(shape.Placement)
+    return local_shape.BoundBox
 
 
 def _clamp_to_owner(owner: Any, local_position: Any) -> Any:
@@ -1055,7 +1090,18 @@ def _global_placement(owner: Any) -> Any:
     try:
         return owner.getGlobalPlacement()
     except (AttributeError, RuntimeError):
-        return owner.Placement
+        local_placement = owner.Placement
+
+    # App::Link does not expose getGlobalPlacement() in FreeCAD 1.1. Its
+    # Placement is relative to the containing App::Part/Assembly, so compose
+    # that parent coordinate system explicitly.
+    try:
+        parent = owner.getParentGeoFeatureGroup()
+    except (AttributeError, RuntimeError):
+        parent = None
+    if parent is None:
+        return local_placement
+    return _global_placement(parent).multiply(local_placement)
 
 
 def _mark_terminal_dependents_stale(terminal: Any) -> None:

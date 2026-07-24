@@ -39,6 +39,14 @@ k2 = document.addObject("Part::Feature", "K2")
 k2.Label = "K2"
 k2.Shape = Part.makeBox(20, 10, 10)
 k2.Placement.Base = App.Vector(100, 0, 0)
+
+# Assembly::JointGroup is a shape-less, placement-less document container.
+# Even with a colliding label it must be ignored by physical-target matching.
+assembly = document.addObject("Assembly::AssemblyObject", "Assembly")
+joint_group = assembly.newObject("Assembly::JointGroup", "Joints")
+joint_group.Label = "K1"
+assert not hasattr(joint_group, "Placement")
+assert not hasattr(joint_group, "getGlobalPlacement")
 document.recompute()
 
 vertex = k2.getSubObject("Vertex1")
@@ -51,8 +59,17 @@ assert _near(picked_world, expected_world)
 summary = import_project(document, parsed.project)
 assert summary.element_count == 2, summary
 assert summary.matched_count == 2, summary
+assert summary.ambiguous_count == 0, summary
 assert summary.terminal_count == 4, summary
 assert summary.routeable_conductor_count == 1, summary
+assert "QET_Manufacturer" not in joint_group.PropertiesList
+bindings = {
+    item.QETLabel: item
+    for item in document.Objects
+    if getattr(item, "QET_ObjectKind", "") == "DeviceBinding"
+}
+assert bindings["K1"].Target is k1
+assert list(bindings["K1"].MatchCandidates) == [k1.Name]
 assert k1.QET_Manufacturer == "ACME"
 assert k1.QET_ArticleNumber == "RX-2"
 assert k1.QET_OrderNumber == "ORDER-42"
@@ -80,6 +97,17 @@ assert terminals["K2.A1"].Definition is pin_definitions["A1"]
 assert _near(terminals["K1.A1"].WorldPosition, (10, 5, 5))
 assert _near(terminals["K2.A1"].WorldPosition, (110, 5, 5))
 
+# Version 0.1.0 used scope-limited links. Reimport must migrate them without
+# replacing the generated binding or terminal objects.
+bindings["K1"].removeProperty("Target")
+bindings["K1"].addProperty("App::PropertyLink", "Target", "QET Device Binding")
+bindings["K1"].Target = k1
+terminals["K1.A1"].removeProperty("Owner")
+terminals["K1.A1"].addProperty("App::PropertyLink", "Owner", "QET Terminal")
+terminals["K1.A1"].Owner = k1
+assert bindings["K1"].getTypeIdOfProperty("Target") == "App::PropertyLink"
+assert terminals["K1.A1"].getTypeIdOfProperty("Owner") == "App::PropertyLink"
+
 pin_definitions["A1"].LocalPosition = App.Vector(1, 2, 3)
 document.recompute()
 assert _near(terminals["K1.A1"].WorldPosition, (1, 2, 3))
@@ -89,6 +117,10 @@ object_count = len(document.Objects)
 second_summary = import_project(document, parsed.project)
 assert second_summary == summary
 assert len(document.Objects) == object_count
+assert bindings["K1"].getTypeIdOfProperty("Target") == "App::PropertyLinkGlobal"
+assert terminals["K1.A1"].getTypeIdOfProperty("Owner") == "App::PropertyLinkGlobal"
+assert bindings["K1"].Target is k1
+assert terminals["K1.A1"].Owner is k1
 assert _near(pin_definitions["A1"].LocalPosition, (1, 2, 3))
 
 placement = terminals["K1.A1"].Placement
@@ -296,6 +328,15 @@ with tempfile.TemporaryDirectory(prefix="qet-routing-") as temp_dir:
         for item in reopened.Objects
         if getattr(item, "QET_ObjectKind", "") == "TerminalInstance"
     }
+    restored_bindings = {
+        item.QETLabel: item
+        for item in reopened.Objects
+        if getattr(item, "QET_ObjectKind", "") == "DeviceBinding"
+    }
+    assert restored_bindings["K1"].getTypeIdOfProperty("Target") == "App::PropertyLinkGlobal"
+    assert restored["K1.A1"].getTypeIdOfProperty("Owner") == "App::PropertyLinkGlobal"
+    assert restored_bindings["K1"].Target.Label == "K1"
+    assert restored["K1.A1"].Owner.Label == "K1"
     assert _near(restored["K1.A1"].WorldPosition, (6, 2, 3))
     assert _near(restored["K2.A1"].WorldPosition, (106, 2, 3))
     restored_routes = [
@@ -306,6 +347,54 @@ with tempfile.TemporaryDirectory(prefix="qet-routing-") as temp_dir:
     assert len(restored_routes) == 1
     assert restored_routes[0].Shape.Length > 0
     App.closeDocument(reopened.Name)
+
+# App::Link reports shape bounds after its own Placement but, unlike a regular
+# GeoFeature, does not expose getGlobalPlacement(). Verify terminal definitions
+# stay owner-local while nested link instances receive the full parent transform.
+link_document = App.newDocument("QetRoutingAssemblyLinkSmoke")
+link_source_k1 = link_document.addObject("Part::Feature", "K1Source")
+link_source_k1.Label = "K1 Source"
+link_source_k1.Shape = Part.makeBox(20, 10, 10)
+link_source_k1.Placement.Base = App.Vector(50, 0, 0)
+link_source_k2 = link_document.addObject("Part::Feature", "K2Source")
+link_source_k2.Label = "K2 Source"
+link_source_k2.Shape = Part.makeBox(20, 10, 10)
+link_source_k2.Placement.Base = App.Vector(50, 0, 0)
+link_container = link_document.addObject("App::Part", "LinkContainer")
+link_container.Placement.Base = App.Vector(1000, 0, 0)
+link_k1 = link_container.newObject("App::Link", "K1Link")
+link_k1.Label = "K1"
+link_k1.LinkedObject = link_source_k1
+link_k1.LinkTransform = True
+link_k1.Placement.Base = App.Vector(200, 0, 0)
+link_k2 = link_container.newObject("App::Link", "K2Link")
+link_k2.Label = "K2"
+link_k2.LinkedObject = link_source_k2
+link_k2.LinkTransform = True
+link_k2.Placement.Base = App.Vector(400, 0, 0)
+link_document.recompute()
+
+link_summary = import_project(link_document, parsed.project)
+assert link_summary.matched_count == 2, link_summary
+assert link_summary.ambiguous_count == 0, link_summary
+link_bindings = {
+    item.QETLabel: item
+    for item in link_document.Objects
+    if getattr(item, "QET_ObjectKind", "") == "DeviceBinding"
+}
+assert link_bindings["K1"].Target is link_k1
+assert link_bindings["K2"].Target is link_k2
+assert link_bindings["K1"].getTypeIdOfProperty("Target") == "App::PropertyLinkGlobal"
+link_terminals = {
+    item.Label: item
+    for item in link_document.Objects
+    if getattr(item, "QET_ObjectKind", "") == "TerminalInstance"
+}
+assert link_terminals["K1.A1"].getTypeIdOfProperty("Owner") == "App::PropertyLinkGlobal"
+assert _near(link_terminals["K1.A1"].Definition.LocalPosition, (60, 5, 5))
+assert _near(link_terminals["K1.A1"].WorldPosition, (1260, 5, 5))
+assert _near(link_terminals["K2.A1"].WorldPosition, (1460, 5, 5))
+App.closeDocument(link_document.Name)
 
 # Physically unmatched devices are never treated as wires at the document origin.
 unmatched_document = App.newDocument("QetRoutingUnmatchedSmoke")
