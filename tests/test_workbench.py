@@ -12,11 +12,24 @@ from unittest.mock import patch
 
 from freecad.QetRouting import ICON_DIR
 from freecad.QetRouting import commands
+from freecad.QetRouting.document import _ensure_native_part_view_provider
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class WorkbenchPackagingTests(unittest.TestCase):
+    def test_native_part_view_provider_sentinel_repairs_missing_proxy(self) -> None:
+        class ViewObject:
+            Proxy = None
+            DisplayMode = "None"
+
+        obj = types.SimpleNamespace(ViewObject=ViewObject())
+        view_object, repaired = _ensure_native_part_view_provider(obj)
+
+        self.assertIs(view_object, obj.ViewObject)
+        self.assertEqual(view_object.Proxy, 0)
+        self.assertTrue(repaired)
+
     def test_manifest_declares_workbench_and_existing_icon(self) -> None:
         root = ET.parse(ROOT / "package.xml").getroot()
         namespace = {"m": "https://wiki.freecad.org/Package_Metadata"}

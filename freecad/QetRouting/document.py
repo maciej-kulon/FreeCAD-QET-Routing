@@ -23,6 +23,27 @@ DEVICE_INSTANCES_NAME = "QETDeviceInstances"
 CONDUCTORS_NAME = "QETConductors"
 
 
+def _ensure_native_part_view_provider(obj: Any) -> tuple[Any | None, bool]:
+    """Attach FreeCAD's native Part view provider to a FeaturePython object.
+
+    FreeCAD delays the native scene-graph setup for ``Part::FeaturePython``
+    until its view-side Proxy is non-null. QET visual objects do not need a
+    custom view provider, so the standard sentinel used by FreeCAD's own
+    scripted Part features is sufficient.
+
+    Returns the view object and whether an unattached legacy object was
+    repaired.
+    """
+
+    view_object = getattr(obj, "ViewObject", None)
+    if view_object is None:
+        return None, False
+    missing_proxy = getattr(view_object, "Proxy", None) is None
+    if missing_proxy:
+        view_object.Proxy = 0
+    return view_object, missing_proxy
+
+
 @dataclass(frozen=True)
 class ImportSummary:
     element_count: int
@@ -45,11 +66,13 @@ class TerminalMarkerProxy:
     def __init__(self, obj: Any) -> None:
         self._updating_placement = False
         obj.Proxy = self
+        self._repair_view_provider(obj)
 
     def execute(self, obj: Any) -> None:
         import FreeCAD as App
         import Part
 
+        self._repair_view_provider(obj)
         definition = getattr(obj, "Definition", None)
         mode = str(getattr(obj, "PositionMode", "Inherited"))
         if mode == "Overridden":
@@ -134,6 +157,14 @@ class TerminalMarkerProxy:
 
     def loads(self, _state: Any) -> None:
         self._updating_placement = False
+
+    def onDocumentRestored(self, obj: Any) -> None:
+        self._updating_placement = False
+        self._repair_view_provider(obj)
+
+    @staticmethod
+    def _repair_view_provider(obj: Any) -> None:
+        _ensure_native_part_view_provider(obj)
 
 
 class ConductorProxy:
@@ -648,10 +679,11 @@ def _ensure_terminal_marker(
             "Derived terminal position in document coordinates",
             1,
         )
-    view_object = getattr(obj, "ViewObject", None)
+    view_object, _repaired = _ensure_native_part_view_provider(obj)
     if view_object is not None:
-        if previous_sync_status == "Obsolete":
+        if created or previous_sync_status == "Obsolete":
             view_object.Visibility = True
+            view_object.Selectable = True
         view_object.ShapeColor = (1.0, 0.55, 0.0)
         view_object.LineColor = (1.0, 0.85, 0.2)
     return obj

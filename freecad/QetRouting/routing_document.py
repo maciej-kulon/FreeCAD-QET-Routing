@@ -10,6 +10,7 @@ from typing import Any
 from .document import (
     ROOT_NAME,
     _ensure_group,
+    _ensure_native_part_view_provider,
     _mark_conductor_stale,
     _object_name,
     _set_enumeration,
@@ -48,10 +49,12 @@ class RoutingCorridorProxy:
 
     def __init__(self, obj: Any) -> None:
         obj.Proxy = self
+        self._repair_view_provider(obj)
 
     def execute(self, obj: Any) -> None:
         import Part
 
+        self._repair_view_provider(obj)
         length, width, height = _corridor_dimensions(obj)
         obj.Shape = Part.makeBox(length, width, height)
 
@@ -83,6 +86,13 @@ class RoutingCorridorProxy:
     def loads(self, _state: Any) -> None:
         return None
 
+    def onDocumentRestored(self, obj: Any) -> None:
+        self._repair_view_provider(obj)
+
+    @staticmethod
+    def _repair_view_provider(obj: Any) -> None:
+        _ensure_native_part_view_provider(obj)
+
 
 class WireRouteProxy:
     """Keeps cut length reactive when route allowances are edited."""
@@ -92,8 +102,10 @@ class WireRouteProxy:
     def __init__(self, obj: Any) -> None:
         self._updating = False
         obj.Proxy = self
+        self._repair_view_provider(obj)
 
     def execute(self, obj: Any) -> None:
+        self._repair_view_provider(obj)
         self._update(obj)
 
     def onChanged(self, obj: Any, property_name: str) -> None:
@@ -123,6 +135,14 @@ class WireRouteProxy:
 
     def loads(self, _state: Any) -> None:
         self._updating = False
+
+    def onDocumentRestored(self, obj: Any) -> None:
+        self._updating = False
+        self._repair_view_provider(obj)
+
+    @staticmethod
+    def _repair_view_provider(obj: Any) -> None:
+        _ensure_native_part_view_provider(obj)
 
 
 def create_corridor(
@@ -216,8 +236,10 @@ def _create_corridor_object(
     obj.Enabled = True
     RoutingCorridorProxy(obj)
     corridors.addObject(obj)
-    view_object = getattr(obj, "ViewObject", None)
+    view_object, _repaired = _ensure_native_part_view_provider(obj)
     if view_object is not None:
+        view_object.Visibility = True
+        view_object.Selectable = True
         view_object.ShapeColor = (0.2, 0.65, 1.0)
         view_object.LineColor = (0.1, 0.35, 0.8)
         view_object.Transparency = 75
@@ -520,9 +542,10 @@ def _ensure_wire_route(
         "Routed",
         "Wire Route",
     )
-    view_object = getattr(route, "ViewObject", None)
+    view_object, _repaired = _ensure_native_part_view_provider(route)
     if view_object is not None:
         view_object.Visibility = True
+        view_object.Selectable = True
         view_object.LineColor = (0.95, 0.65, 0.1)
         view_object.LineWidth = 3.0
     return route
