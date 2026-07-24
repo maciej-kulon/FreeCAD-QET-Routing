@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: CC0-1.0
+
+[project]
+name = "freecad-qet-routing"
+version = "0.1.0"
+description = "QElectroTech-driven physical wire routing for FreeCAD"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "LGPL-2.1-or-later" }
+authors = [{ name = "Maciej Kulon" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "freecad-stubs>=1.0.21",
+  "ruff>=0.12",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]

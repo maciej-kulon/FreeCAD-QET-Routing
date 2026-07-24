@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- SPDX-License-Identifier: CC0-1.0 -->
+<package format="1" xmlns="https://wiki.freecad.org/Package_Metadata">
+  <name>QET Routing</name>
+  <description>Import QElectroTech connectivity, place reusable device terminals, and route physical wires in FreeCAD.</description>
+  <version>0.1.0</version>
+  <date>2026-07-24</date>
+
+  <freecadmin>1.0.0</freecadmin>
+  <pythonmin>3.10</pythonmin>
+
+  <maintainer email="maciej-kulon@users.noreply.github.com">Maciej Kulon</maintainer>
+  <license file="LICENSE">LGPL-2.1-or-later</license>
+
+  <url type="repository" branch="main">https://github.com/maciej-kulon/FreeCAD-QET-Routing</url>
+  <url type="bugtracker">https://github.com/maciej-kulon/FreeCAD-QET-Routing/issues</url>
+  <url type="readme">https://github.com/maciej-kulon/FreeCAD-QET-Routing/blob/main/README.md</url>
+  <icon>Resources/Icons/Logo.svg</icon>
+
+  <tag>Electrical</tag>
+  <tag>Routing</tag>
+  <tag>QElectroTech</tag>
+
+  <content>
+    <workbench>
+      <classname>QetRoutingWorkbench</classname>
+    </workbench>
+  </content>
+</package>

@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project title="Legacy endpoint fixture" version="0.80">
+  <newdiagrams>
+    <diagram order="1" title="F1">
+      <elements>
+        <element
+            type="embed://import/legacy/device.elmt"
+            uuid="{30000000-0000-4000-8000-000000000001}">
+          <terminals>
+            <terminal id="10" x="0" y="0" orientation="1"/>
+          </terminals>
+          <elementInformations>
+            <elementInformation name="label" show="1">X1</elementInformation>
+          </elementInformations>
+        </element>
+
+        <element
+            type="embed://import/legacy/device.elmt"
+            uuid="{30000000-0000-4000-8000-000000000002}">
+          <terminals>
+            <terminal id="20" x="0" y="0" orientation="1"/>
+          </terminals>
+          <elementInformations>
+            <elementInformation name="label" show="1">X2</elementInformation>
+          </elementInformations>
+        </element>
+      </elements>
+
+      <conductors>
+        <conductor terminal1="10" terminal2="20" type="multi" num="L1"/>
+      </conductors>
+    </diagram>
+  </newdiagrams>
+
+  <collection>
+    <category name="import">
+      <category name="legacy">
+        <element name="device.elmt">
+          <definition
+              type="element"
+              link_type="simple"
+              version="0.60"
+              width="20" height="20"
+              hotspot_x="10" hotspot_y="10">
+            <names>
+              <name lang="en">Legacy device</name>
+            </names>
+            <description>
+              <terminal name="1" x="0" y="0" orientation="e"/>
+            </description>
+          </definition>
+        </element>
+      </category>
+    </category>
+  </collection>
+</project>
