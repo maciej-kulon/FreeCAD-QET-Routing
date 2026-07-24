@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 
 
@@ -88,6 +88,14 @@ class QetTerminal:
 
 
 @dataclass(frozen=True)
+class QetElementLink:
+    """A QET cross-reference from one schematic element to another."""
+
+    element_uuid: str
+    group_index: int | None = None
+
+
+@dataclass(frozen=True)
 class QetElement:
     uuid: str
     type_path: str
@@ -104,6 +112,10 @@ class QetElement:
     folio_order: str
     information: dict[str, str] = field(default_factory=dict)
     terminals: tuple[QetTerminal, ...] = ()
+    links: tuple[QetElementLink, ...] = ()
+    physical_device_uuid: str = ""
+    physical_fragment_slot: str = ""
+    fragment_uuids: tuple[str, ...] = ()
 
     @property
     def device_type(self) -> DeviceTypeIdentity:
@@ -171,6 +183,64 @@ class QetProject:
     @property
     def routeable_conductors(self) -> tuple[QetConductor, ...]:
         return tuple(conductor for conductor in self.conductors if conductor.is_routeable)
+
+    @property
+    def physical_devices(self) -> tuple[QetElement, ...]:
+        """Return validated physical devices while preserving raw fragments.
+
+        A simple element is a one-fragment device. A linked master and its
+        slaves become one aggregate whose UUID and metadata come from the
+        master. Terminal objects are not rewritten, so conductor endpoint
+        identities continue to refer to their original schematic fragments.
+        """
+
+        grouped: dict[str, list[QetElement]] = {}
+        for element in self.elements:
+            physical_uuid = element.physical_device_uuid
+            if (
+                not physical_uuid
+                and not element.fragment_uuids
+                and element.link_type.strip().casefold()
+                in {"", "simple", "master", "terminal"}
+            ):
+                # Preserve compatibility with callers that construct the
+                # pre-grouping model directly. Parsed fragments always carry
+                # fragment_uuids, including deliberately excluded symbols.
+                physical_uuid = element.uuid
+            if physical_uuid:
+                grouped.setdefault(physical_uuid, []).append(element)
+
+        devices: list[QetElement] = []
+        for physical_uuid, fragments in grouped.items():
+            master = next(
+                (fragment for fragment in fragments if fragment.uuid == physical_uuid),
+                None,
+            )
+            if master is None:
+                # Parser validation should make this impossible. Treat malformed
+                # manually-created models conservatively instead of inventing an
+                # aggregate identity.
+                continue
+            ordered = sorted(
+                fragments,
+                key=lambda fragment: (
+                    0 if fragment.uuid == physical_uuid else 1,
+                    fragment.physical_fragment_slot,
+                    fragment.uuid,
+                ),
+            )
+            devices.append(
+                replace(
+                    master,
+                    terminals=tuple(
+                        terminal
+                        for fragment in ordered
+                        for terminal in fragment.terminals
+                    ),
+                    fragment_uuids=tuple(fragment.uuid for fragment in ordered),
+                )
+            )
+        return tuple(devices)
 
     def element_by_uuid(self) -> dict[str, QetElement]:
         return {element.uuid: element for element in self.elements}

@@ -12,6 +12,9 @@ patch of FreeCAD.
 - matches QET devices to physical FreeCAD objects by exact `Label`;
 - stores Manufacturer, Article number, Order number, and Internal number from
   their distinct QET fields;
+- merges explicitly linked QET master coils and slave contacts into one
+  physical device, even when their schematic fragments are on different
+  folios;
 - creates reusable part types and shared terminal definitions;
 - initializes terminals at the center of the matched part;
 - propagates an inherited terminal move to every instance of the same part
@@ -28,8 +31,8 @@ patch of FreeCAD.
   records as obsolete instead of silently routing stale wires.
 
 Single-line conductors, unknown conductor types, ambiguous identifiers,
-unmatched parts, and recognized nonphysical QET report/slave symbols are
-imported or diagnosed but are not routed.
+unmatched parts, QET report symbols, and unlinked or ambiguous slave symbols
+are imported or diagnosed but are not routed.
 
 ## Installation
 
@@ -88,14 +91,15 @@ identity. They are never treated as physical 3D pin locations.
 - Every QET multiline conductor endpoint pair becomes one physical wire.
 - QET single-line conductors require a future explicit physical-core expansion
   workflow.
-- Cross-folio report continuation and master/slave physical-device grouping are
-  blocked pending an explicit mapping workflow.
+- Cross-folio report continuation is not resolved. Master/slave device
+  fragments are merged only when QET provides a valid typed UUID link; labels
+  alone are never used to infer the relationship.
 - Connected pins from external QET element libraries can be recovered from
   current conductor UUIDs, but their `link_type` cannot be verified without the
   definition. Review the import warning before routing; disconnected pins
   require an embedded definition or a future library resolver.
-- QET terminal-strip bridges and reserved terminals, `links_uuids`, cable
-  grouping, and bus grouping are not interpreted.
+- QET terminal-strip bridges and reserved terminals, non-master/slave uses of
+  `links_uuids`, cable grouping, and bus grouping are not interpreted.
 - Corridor fill is a planning estimate, not standards-compliant duct sizing.
   Set each wire's `OuterDiameter`; otherwise copper section is used, and a
   corridor `Capacity` of zero means unlimited.

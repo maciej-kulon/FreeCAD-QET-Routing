@@ -426,6 +426,167 @@ assert duplicate_summary.ambiguous_count == 2
 assert duplicate_summary.routeable_conductor_count == 0
 App.closeDocument(duplicate_document.Name)
 
+# Parsed cross-folio contacts must flow through the document adapter as one
+# master-owned physical relay, with contact conductors still connected to
+# fragment-scoped terminal markers.
+linked_document = App.newDocument("QetRoutingLinkedRelaySmoke")
+for index, label in enumerate(("K1", "X1", "X2", "X3")):
+    part = linked_document.addObject("Part::Feature", f"Linked{label}")
+    part.Label = label
+    part.Shape = Part.makeBox(20, 10, 10)
+    part.Placement.Base = App.Vector(index * 100, 0, 0)
+linked_document.recompute()
+
+linked_fixture = Path(__file__).parent / "fixtures" / "master_slave.qet"
+linked_project = parse_qet(linked_fixture).project
+linked_summary = import_project(linked_document, linked_project)
+assert linked_summary.element_count == 4
+assert linked_summary.matched_count == 4
+assert linked_summary.terminal_count == 9
+assert linked_summary.routeable_conductor_count == 3
+linked_bindings = [
+    item
+    for item in linked_document.Objects
+    if getattr(item, "QET_ObjectKind", "") == "DeviceBinding"
+]
+linked_relay_binding = next(item for item in linked_bindings if item.QETLabel == "K1")
+assert len(linked_bindings) == 4
+assert list(linked_relay_binding.QETFragmentUUIDs) == [
+    "50000000-0000-4000-8000-000000000001",
+    "50000000-0000-4000-8000-000000000002",
+    "50000000-0000-4000-8000-000000000003",
+]
+linked_relay_terminals = [
+    item
+    for item in linked_relay_binding.Group
+    if getattr(item, "QET_ObjectKind", "") == "TerminalInstance"
+]
+assert len(linked_relay_terminals) == 6
+assert {
+    item.QETElementUUID for item in linked_relay_terminals
+} == set(linked_relay_binding.QETFragmentUUIDs)
+linked_conductors = {
+    item.WireNumber: item
+    for item in linked_document.Objects
+    if getattr(item, "QET_ObjectKind", "") == "Conductor"
+}
+assert str(linked_conductors["W-13"].RouteStatus) == "Ready"
+assert str(linked_conductors["W-14"].RouteStatus) == "Ready"
+App.closeDocument(linked_document.Name)
+
+# A master coil and a contact fragment are one physical relay. Reimporting an
+# old fragment-per-binding document must reuse and move the contact marker,
+# while retaining both its schematic UUID and its authored 3D pin layout.
+relay_document = App.newDocument("QetRoutingRelayMergeSmoke")
+relay_part = relay_document.addObject("Part::Feature", "RelayK1")
+relay_part.Label = "K1"
+relay_part.Shape = Part.makeBox(20, 10, 10)
+relay_document.recompute()
+
+relay_master_uuid = parsed.project.elements[0].uuid
+relay_slave_uuid = "10000000-0000-4000-8000-000000000099"
+relay_contact_uuid = "99999999-9999-4999-8999-999999999999"
+relay_master = replace(
+    parsed.project.elements[0],
+    links=(),
+    physical_device_uuid=relay_master_uuid,
+    physical_fragment_slot="",
+    fragment_uuids=(relay_master_uuid,),
+)
+relay_contact = replace(
+    relay_master.terminals[0],
+    element_uuid=relay_slave_uuid,
+    definition_uuid=relay_contact_uuid,
+    local_id="",
+    name="13",
+)
+relay_slave = replace(
+    relay_master,
+    uuid=relay_slave_uuid,
+    definition_uuid="90000000-0000-4000-8000-000000000099",
+    link_type="slave",
+    label="",
+    manufacturer="",
+    article_number="",
+    order_number="",
+    internal_number="",
+    terminals=(relay_contact,),
+    physical_device_uuid=relay_slave_uuid,
+    physical_fragment_slot="",
+    fragment_uuids=(relay_slave_uuid,),
+)
+legacy_relay_project = replace(
+    parsed.project,
+    elements=(relay_master, relay_slave),
+    conductors=(),
+)
+legacy_relay_summary = import_project(relay_document, legacy_relay_project)
+assert legacy_relay_summary.element_count == 2
+legacy_relay_bindings = {
+    item.QETElementUUID: item
+    for item in relay_document.Objects
+    if getattr(item, "QET_ObjectKind", "") == "DeviceBinding"
+}
+legacy_slave_binding = legacy_relay_bindings[relay_slave_uuid]
+legacy_contact_marker = next(
+    item
+    for item in relay_document.Objects
+    if (
+        getattr(item, "QET_ObjectKind", "") == "TerminalInstance"
+        and getattr(item, "QETTerminalUUID", "") == relay_contact_uuid
+    )
+)
+legacy_contact_definition = legacy_contact_marker.Definition
+legacy_contact_definition.LocalPosition = App.Vector(3, 4, 5)
+legacy_contact_definition.ExitDirection = App.Vector(0, 1, 0)
+legacy_contact_definition.PlacementStatus = "Placed"
+relay_document.recompute()
+
+grouped_relay_project = replace(
+    parsed.project,
+    elements=(
+        relay_master,
+        replace(
+            relay_slave,
+            physical_device_uuid=relay_master_uuid,
+            physical_fragment_slot="00000001",
+        ),
+    ),
+    conductors=(),
+)
+grouped_relay_summary = import_project(relay_document, grouped_relay_project)
+assert grouped_relay_summary.element_count == 1
+assert grouped_relay_summary.matched_count == 1
+assert grouped_relay_summary.missing_count == 0
+assert grouped_relay_summary.terminal_count == 3
+assert grouped_relay_summary.obsolete_element_count == 1
+assert grouped_relay_summary.obsolete_terminal_count == 0
+relay_master_binding = next(
+    item
+    for item in relay_document.Objects
+    if (
+        getattr(item, "QET_ObjectKind", "") == "DeviceBinding"
+        and item.QETElementUUID == relay_master_uuid
+    )
+)
+assert list(relay_master_binding.QETFragmentUUIDs) == [
+    relay_master_uuid,
+    relay_slave_uuid,
+]
+merged_contact_marker = relay_document.getObject(legacy_contact_marker.Name)
+assert merged_contact_marker is legacy_contact_marker
+assert merged_contact_marker.QETElementUUID == relay_slave_uuid
+assert merged_contact_marker.Owner is relay_part
+assert merged_contact_marker in relay_master_binding.Group
+assert merged_contact_marker not in legacy_slave_binding.Group
+assert str(legacy_slave_binding.BindingStatus) == "Obsolete"
+assert merged_contact_marker.Definition is not legacy_contact_definition
+assert str(merged_contact_marker.Definition.PlacementStatus) == "Placed"
+assert _near(merged_contact_marker.Definition.LocalPosition, (3, 4, 5))
+assert _near(merged_contact_marker.Definition.ExitDirection, (0, 1, 0))
+assert _near(merged_contact_marker.WorldPosition, (3, 4, 5))
+App.closeDocument(relay_document.Name)
+
 # Free-space terminal lead-ins and lead-outs are included in route length.
 lead_document = App.newDocument("QetRoutingLeadLengthSmoke")
 lead_k1 = lead_document.addObject("Part::Feature", "K1")

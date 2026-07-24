@@ -3,7 +3,7 @@
 
 from pathlib import Path
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 ADDON_ROOT = PACKAGE_DIR.parents[1]

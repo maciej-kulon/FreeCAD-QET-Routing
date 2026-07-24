@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import unittest
+import xml.etree.ElementTree as ET
+from dataclasses import replace
 from pathlib import Path
 
 from freecad.QetRouting.qet import (
@@ -189,6 +191,353 @@ class CurrentProjectTests(unittest.TestCase):
         self.assertEqual(changed.number, "W99")
         self.assertEqual(changed.section_mm2, 2.5)
 
+    def test_shifted_placed_records_do_not_duplicate_definition_terminals(
+        self,
+    ) -> None:
+        data = self.data
+        for local_id in (0, 2):
+            data = data.replace(
+                f'<terminal id="{local_id}" x="-10"'.encode(),
+                f'<terminal id="{local_id}" x="-16"'.encode(),
+                1,
+            )
+        for local_id in (1, 3):
+            data = data.replace(
+                f'<terminal id="{local_id}" x="10"'.encode(),
+                f'<terminal id="{local_id}" x="16"'.encode(),
+                1,
+            )
+
+        result = parse_qet_bytes(data)
+
+        self.assertFalse(result.has_errors, result.diagnostics)
+        self.assertEqual(
+            [len(element.terminals) for element in result.project.elements],
+            [2, 2],
+        )
+        self.assertTrue(
+            all(
+                terminal.definition_uuid
+                for element in result.project.elements
+                for terminal in element.terminals
+            )
+        )
+        self.assertEqual(len(result.project.routeable_conductors), 1)
+        self.assertEqual(
+            sum(
+                item.code is DiagnosticCode.LEGACY_TERMINAL_UNMATCHED
+                for item in result.diagnostics
+            ),
+            4,
+        )
+
+
+class MasterSlaveProjectTests(unittest.TestCase):
+    master_uuid = "50000000-0000-4000-8000-000000000001"
+    first_slave_uuid = "50000000-0000-4000-8000-000000000002"
+    second_slave_uuid = "50000000-0000-4000-8000-000000000003"
+
+    def setUp(self) -> None:
+        self.data = (FIXTURES / "master_slave.qet").read_bytes()
+
+    def test_linked_fragments_form_one_physical_device_without_losing_endpoints(
+        self,
+    ) -> None:
+        result = parse_qet_bytes(self.data)
+
+        self.assertFalse(result.has_errors, result.diagnostics)
+        self.assertEqual(result.diagnostics, ())
+        self.assertEqual(len(result.project.elements), 6)
+        self.assertEqual(len(result.project.physical_devices), 4)
+        self.assertEqual(len(result.project.routeable_conductors), 3)
+
+        relay = next(
+            device
+            for device in result.project.physical_devices
+            if device.uuid == self.master_uuid
+        )
+        self.assertEqual(relay.label, "K1")
+        self.assertEqual(relay.manufacturer, "ACME")
+        self.assertEqual(relay.article_number, "RX-4")
+        self.assertEqual(
+            relay.fragment_uuids,
+            (
+                self.master_uuid,
+                self.first_slave_uuid,
+                self.second_slave_uuid,
+            ),
+        )
+        self.assertEqual(len(relay.terminals), 6)
+        self.assertEqual(
+            {terminal.element_uuid for terminal in relay.terminals},
+            {
+                self.master_uuid,
+                self.first_slave_uuid,
+                self.second_slave_uuid,
+            },
+        )
+
+        by_uuid = result.project.element_by_uuid()
+        self.assertEqual(
+            [
+                (link.element_uuid, link.group_index)
+                for link in by_uuid[self.first_slave_uuid].links
+            ],
+            [(self.master_uuid, 1)],
+        )
+        self.assertEqual(
+            [
+                (link.element_uuid, link.group_index)
+                for link in by_uuid[self.second_slave_uuid].links
+            ],
+            [(self.master_uuid, 2)],
+        )
+        self.assertTrue(
+            by_uuid[self.first_slave_uuid].physical_fragment_slot.startswith(
+                "00000001|slave|"
+            )
+        )
+        self.assertTrue(
+            by_uuid[self.second_slave_uuid].physical_fragment_slot.startswith(
+                "00000002|slave|"
+            )
+        )
+        self.assertEqual(
+            result.project.conductors[1].endpoint_a.identity,
+            (
+                f"{self.first_slave_uuid}:"
+                "b1111111-1111-4111-8111-111111111111"
+            ),
+        )
+        self.assertEqual(
+            result.project.conductors[2].endpoint_a.identity,
+            (
+                f"{self.second_slave_uuid}:"
+                "b2222222-2222-4222-8222-222222222222"
+            ),
+        )
+
+    def test_physical_devices_are_deterministic_and_raw_fragments_remain_raw(
+        self,
+    ) -> None:
+        first = parse_qet_bytes(self.data).project
+        second = parse_qet_bytes(self.data).project
+
+        self.assertEqual(first.physical_devices, second.physical_devices)
+        raw_relay_fragments = [
+            element
+            for element in first.elements
+            if element.physical_device_uuid == self.master_uuid
+        ]
+        self.assertEqual(
+            [len(element.terminals) for element in raw_relay_fragments],
+            [2, 2, 2],
+        )
+        self.assertEqual(
+            [element.fragment_uuids for element in raw_relay_fragments],
+            [
+                (self.master_uuid,),
+                (self.first_slave_uuid,),
+                (self.second_slave_uuid,),
+            ],
+        )
+
+    def test_pre_grouping_model_elements_remain_singleton_devices(self) -> None:
+        project = parse_qet_bytes(self.data).project
+        unannotated = replace(
+            project.element_by_uuid()[self.master_uuid],
+            physical_device_uuid="",
+            fragment_uuids=(),
+        )
+        compatibility_project = replace(project, elements=(unannotated,))
+
+        self.assertEqual(
+            compatibility_project.physical_devices[0].fragment_uuids,
+            (self.master_uuid,),
+        )
+
+    def test_orphan_slaves_are_not_physical_or_routeable(self) -> None:
+        data = self.data.replace(b"<links_uuids>", b"<ignored_links>").replace(
+            b"</links_uuids>",
+            b"</ignored_links>",
+        )
+
+        result = parse_qet_bytes(data)
+
+        self.assertTrue(result.has_errors)
+        self.assertEqual(
+            {device.label for device in result.project.physical_devices},
+            {"K1", "X1", "X2", "X3"},
+        )
+        relay = next(
+            device
+            for device in result.project.physical_devices
+            if device.uuid == self.master_uuid
+        )
+        self.assertEqual(relay.fragment_uuids, (self.master_uuid,))
+        self.assertEqual(
+            [conductor.number for conductor in result.project.routeable_conductors],
+            ["W-A1"],
+        )
+        self.assertEqual(
+            sum("is not linked to a master" in item.message for item in result.diagnostics),
+            2,
+        )
+
+    def test_slave_linked_to_several_masters_is_blocked(self) -> None:
+        root = ET.fromstring(self.data)
+        elements = {
+            node.get("uuid", "").strip("{}"): node
+            for node in root.iter("element")
+            if node.get("uuid")
+        }
+        second_master = elements["50000000-0000-4000-8000-000000000102"]
+        second_master.set("type", "embed://import/test/relay-master.elmt")
+        second_master_links = ET.SubElement(second_master, "links_uuids")
+        ET.SubElement(
+            second_master_links,
+            "link_uuid",
+            {"uuid": "{" + self.first_slave_uuid + "}"},
+        )
+        first_slave_links = elements[self.first_slave_uuid].find("links_uuids")
+        self.assertIsNotNone(first_slave_links)
+        ET.SubElement(
+            first_slave_links,
+            "link_uuid",
+            {"uuid": "{50000000-0000-4000-8000-000000000102}"},
+        )
+
+        result = parse_qet_bytes(ET.tostring(root))
+
+        self.assertTrue(result.has_errors)
+        self.assertTrue(
+            any("is linked to several masters" in item.message for item in result.diagnostics)
+        )
+        self.assertFalse(
+            next(
+                conductor
+                for conductor in result.project.conductors
+                if conductor.number == "W-13"
+            ).is_routeable
+        )
+        relay = next(
+            device
+            for device in result.project.physical_devices
+            if device.uuid == self.master_uuid
+        )
+        self.assertNotIn(self.first_slave_uuid, relay.fragment_uuids)
+
+    def test_report_links_are_not_merged_as_physical_devices(self) -> None:
+        data = self.data.replace(
+            b'link_type="master"',
+            b'link_type="next_report"',
+            1,
+        ).replace(
+            b'link_type="slave"',
+            b'link_type="previous_report"',
+            1,
+        )
+
+        result = parse_qet_bytes(data)
+
+        self.assertEqual(
+            {device.label for device in result.project.physical_devices},
+            {"X1", "X2", "X3"},
+        )
+        self.assertEqual(result.project.routeable_conductors, ())
+
+    def test_one_way_link_is_accepted_with_a_warning(self) -> None:
+        root = ET.fromstring(self.data)
+        slave = next(
+            node
+            for node in root.iter("element")
+            if node.get("uuid", "").strip("{}") == self.second_slave_uuid
+        )
+        slave_links = slave.find("links_uuids")
+        self.assertIsNotNone(slave_links)
+        slave.remove(slave_links)
+
+        result = parse_qet_bytes(ET.tostring(root))
+
+        relay = next(
+            device
+            for device in result.project.physical_devices
+            if device.uuid == self.master_uuid
+        )
+        self.assertIn(self.second_slave_uuid, relay.fragment_uuids)
+        self.assertTrue(
+            next(
+                conductor
+                for conductor in result.project.conductors
+                if conductor.number == "W-14"
+            ).is_routeable
+        )
+        self.assertTrue(
+            any("present in only one direction" in item.message for item in result.diagnostics)
+        )
+
+    def test_group_index_order_survives_aggregate_fragment_sorting(self) -> None:
+        root = ET.fromstring(self.data)
+        links_by_slave = {
+            node.get("uuid", "").strip("{}"): node.find("links_uuids/link_uuid")
+            for node in root.iter("element")
+            if node.get("uuid", "").strip("{}")
+            in {self.first_slave_uuid, self.second_slave_uuid}
+        }
+        links_by_slave[self.first_slave_uuid].set("group_index", "10")
+        links_by_slave[self.second_slave_uuid].set("group_index", "2")
+
+        project = parse_qet_bytes(ET.tostring(root)).project
+        relay = next(
+            device
+            for device in project.physical_devices
+            if device.uuid == self.master_uuid
+        )
+
+        self.assertEqual(
+            relay.fragment_uuids,
+            (
+                self.master_uuid,
+                self.second_slave_uuid,
+                self.first_slave_uuid,
+            ),
+        )
+
+    def test_master_link_position_orders_slaves_without_group_indices(self) -> None:
+        root = ET.fromstring(self.data)
+        elements = {
+            node.get("uuid", "").strip("{}"): node
+            for node in root.iter("element")
+            if node.get("uuid")
+        }
+        for slave_uuid in (self.first_slave_uuid, self.second_slave_uuid):
+            slave_link = elements[slave_uuid].find("links_uuids/link_uuid")
+            self.assertIsNotNone(slave_link)
+            slave_link.attrib.pop("group_index", None)
+        master_links = elements[self.master_uuid].find("links_uuids")
+        self.assertIsNotNone(master_links)
+        ordered_link_nodes = list(master_links)
+        for link_node in ordered_link_nodes:
+            master_links.remove(link_node)
+        for link_node in reversed(ordered_link_nodes):
+            master_links.append(link_node)
+
+        project = parse_qet_bytes(ET.tostring(root)).project
+        relay = next(
+            device
+            for device in project.physical_devices
+            if device.uuid == self.master_uuid
+        )
+
+        self.assertEqual(
+            relay.fragment_uuids,
+            (
+                self.master_uuid,
+                self.second_slave_uuid,
+                self.first_slave_uuid,
+            ),
+        )
+
 
 class LegacyProjectTests(unittest.TestCase):
     def test_numeric_endpoints_resolve_per_diagram(self) -> None:
@@ -203,6 +552,19 @@ class LegacyProjectTests(unittest.TestCase):
             DiagnosticCode.LEGACY_ENDPOINT,
             {item.code for item in result.diagnostics},
         )
+
+    def test_orphan_slave_legacy_endpoints_are_blocked(self) -> None:
+        data = (FIXTURES / "legacy.qet").read_bytes().replace(
+            b'link_type="simple"',
+            b'link_type="slave"',
+            1,
+        )
+
+        result = parse_qet_bytes(data)
+
+        self.assertTrue(result.has_errors)
+        self.assertEqual(result.project.physical_devices, ())
+        self.assertEqual(result.project.routeable_conductors, ())
 
     def test_duplicate_legacy_terminal_id_is_ambiguous_not_routeable(self) -> None:
         data = (FIXTURES / "legacy.qet").read_bytes().replace(

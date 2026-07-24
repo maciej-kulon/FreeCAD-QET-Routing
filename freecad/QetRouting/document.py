@@ -285,11 +285,14 @@ def import_project(
         missing = 0
         ambiguous = 0
         terminal_markers: dict[str, Any] = {}
+        physical_devices = tuple(
+            getattr(project, "physical_devices", project.elements)
+        )
         qet_label_counts = Counter(
-            element.label for element in project.elements if element.label
+            element.label for element in physical_devices if element.label
         )
 
-        for element in project.elements:
+        for element in physical_devices:
             candidates = [
                 obj for obj in target_inventory if element.label and obj.Label == element.label
             ]
@@ -411,7 +414,7 @@ def import_project(
         raise
 
     return ImportSummary(
-        element_count=len(project.elements),
+        element_count=len(physical_devices),
         matched_count=matched,
         missing_count=missing,
         ambiguous_count=ambiguous,
@@ -590,6 +593,14 @@ def _ensure_binding(
     _set_string(obj, "Plant", element.plant, "QET Device Binding")
     _set_string(obj, "Location", element.location, "QET Device Binding")
     _set_string(obj, "FolioOrder", element.folio_order, "QET Device Binding")
+    if "QETFragmentUUIDs" not in obj.PropertiesList:
+        obj.addProperty(
+            "App::PropertyStringList",
+            "QETFragmentUUIDs",
+            "QET Device Binding",
+            "Placed QET element UUIDs represented by this physical device",
+        )
+    obj.QETFragmentUUIDs = list(_physical_fragment_uuids(element))
     _set_enumeration(
         obj,
         "BindingStatus",
@@ -606,6 +617,40 @@ def _ensure_binding(
         )
     obj.MatchCandidates = [candidate.Name for candidate in candidates]
     return obj
+
+
+def _physical_fragment_uuids(element: QetElement) -> tuple[str, ...]:
+    """Return the placed QET fragments represented by a physical-device record."""
+
+    declared = tuple(getattr(element, "fragment_uuids", ()))
+    candidates = (
+        declared
+        if declared
+        else (
+            element.uuid,
+            *(terminal.element_uuid for terminal in element.terminals),
+        )
+    )
+    return tuple(dict.fromkeys(uuid for uuid in candidates if uuid))
+
+
+def _move_terminal_marker_to_binding(
+    document: Any,
+    marker: Any,
+    binding: Any,
+) -> None:
+    """Make the current physical binding the sole device group for a marker."""
+
+    for candidate in document.Objects:
+        if (
+            candidate is binding
+            or getattr(candidate, "QET_ObjectKind", "") != "DeviceBinding"
+        ):
+            continue
+        if marker in getattr(candidate, "Group", ()):
+            candidate.removeObject(marker)
+    if marker not in binding.Group:
+        binding.addObject(marker)
 
 
 def _ensure_terminal_marker(
@@ -627,11 +672,14 @@ def _ensure_terminal_marker(
         parent=binding,
         kind="TerminalInstance",
     )
+    _move_terminal_marker_to_binding(document, obj, binding)
+    previous_definition = getattr(obj, "Definition", None)
+    _migrate_terminal_definition_layout(previous_definition, definition)
     if created or not isinstance(getattr(obj, "Proxy", None), TerminalMarkerProxy):
         TerminalMarkerProxy(obj)
     _set_global_link(obj, "Owner", target, "QET Terminal")
     _set_link(obj, "Definition", definition, "QET Terminal")
-    _set_string(obj, "QETElementUUID", element.uuid, "QET Terminal")
+    _set_string(obj, "QETElementUUID", terminal.element_uuid, "QET Terminal")
     _set_string(obj, "QETTerminalUUID", terminal.definition_uuid, "QET Terminal")
     _set_string(obj, "PinKey", pin_key, "QET Terminal")
     if "LastPositionMode" not in obj.PropertiesList:
@@ -687,6 +735,31 @@ def _ensure_terminal_marker(
         view_object.ShapeColor = (1.0, 0.55, 0.0)
         view_object.LineColor = (1.0, 0.85, 0.2)
     return obj
+
+
+def _migrate_terminal_definition_layout(previous: Any, current: Any) -> None:
+    """Carry an authored pin layout into a replacement aggregate device type."""
+
+    if previous is None or previous is current:
+        return
+    previous_properties = getattr(previous, "PropertiesList", ())
+    current_properties = getattr(current, "PropertiesList", ())
+    if (
+        "PlacementStatus" not in previous_properties
+        or str(previous.PlacementStatus) != "Placed"
+        or "PlacementStatus" not in current_properties
+        or str(current.PlacementStatus) == "Placed"
+        or "LocalPosition" not in previous_properties
+        or "LocalPosition" not in current_properties
+    ):
+        return
+    current.LocalPosition = previous.LocalPosition
+    if (
+        "ExitDirection" in previous_properties
+        and "ExitDirection" in current_properties
+    ):
+        current.ExitDirection = previous.ExitDirection
+    current.PlacementStatus = "Placed"
 
 
 def _ensure_conductor_record(

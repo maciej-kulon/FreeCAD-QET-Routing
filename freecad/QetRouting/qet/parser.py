@@ -22,6 +22,7 @@ from .model import (
     ConductorKind,
     QetConductor,
     QetElement,
+    QetElementLink,
     QetEndpoint,
     QetProject,
     QetTerminal,
@@ -84,6 +85,9 @@ class _ElementBuilder:
     information: dict[str, str]
     definition_available: bool
     terminals: list[QetTerminal] = field(default_factory=list)
+    links: list[QetElementLink] = field(default_factory=list)
+    physical_device_uuid: str = ""
+    physical_fragment_slot: str = ""
 
     def freeze(self) -> QetElement:
         return QetElement(
@@ -102,6 +106,10 @@ class _ElementBuilder:
             folio_order=self.folio_order,
             information=dict(self.information),
             terminals=tuple(self.terminals),
+            links=tuple(self.links),
+            physical_device_uuid=self.physical_device_uuid,
+            physical_fragment_slot=self.physical_fragment_slot,
+            fragment_uuids=(self.uuid,),
         )
 
 
@@ -243,6 +251,14 @@ def parse_qet_bytes(
                 information=information,
                 definition_available=definition is not None,
             )
+            builder.links.extend(
+                _element_links(
+                    node,
+                    diagnostics,
+                    diagram_name,
+                    builder.label or builder.uuid,
+                )
+            )
             terminals_parent = _first_child(node, "terminals")
             placed_nodes = (
                 _direct_children(terminals_parent, "terminal")
@@ -365,14 +381,6 @@ def parse_qet_bytes(
                 for unmatched_index in sorted(unmatched_placed):
                     terminal_node = placed_nodes[unmatched_index]
                     local_id = _normalize_legacy_id(terminal_node.get("id", ""))
-                    builder.terminals.append(
-                        QetTerminal(
-                            element_uuid=element_uuid,
-                            local_id=local_id,
-                            schematic_position=_schematic_position(terminal_node),
-                            orientation=terminal_node.get("orientation", ""),
-                        )
-                    )
                     diagnostics.append(
                         Diagnostic(
                             Severity.WARNING,
@@ -406,6 +414,13 @@ def parse_qet_bytes(
                 (node, diagram_name, diagram_key)
                 for node in _direct_children(conductors_parent, "conductor")
             )
+
+    _resolve_physical_devices(
+        builders,
+        builders_by_uuid,
+        ambiguous_element_uuids,
+        diagnostics,
+    )
 
     conductors: list[QetConductor] = []
     occurrence_by_signature: dict[str, int] = {}
@@ -525,6 +540,274 @@ def parse_qet_bytes(
     return ParseResult(project=project, diagnostics=tuple(diagnostics))
 
 
+def _element_links(
+    node: ET.Element,
+    diagnostics: list[Diagnostic],
+    diagram_name: str,
+    item_name: str,
+) -> tuple[QetElementLink, ...]:
+    links_parent = _first_child(node, "links_uuids")
+    if links_parent is None:
+        return ()
+
+    links: list[QetElementLink] = []
+    for link_node in _direct_children(links_parent, "link_uuid"):
+        raw_uuid = link_node.get("uuid", "").strip()
+        linked_uuid = _canonical_uuid(raw_uuid)
+        if not linked_uuid:
+            diagnostics.append(
+                Diagnostic(
+                    Severity.WARNING,
+                    DiagnosticCode.UNSUPPORTED_ELEMENT_LINK_TYPE,
+                    f"Ignored element link with invalid UUID {raw_uuid!r}",
+                    diagram_name,
+                    item_name,
+                )
+            )
+            continue
+
+        raw_group_index = link_node.get("group_index", "").strip()
+        group_index: int | None = None
+        if raw_group_index:
+            try:
+                parsed_group_index = int(raw_group_index, 10)
+            except ValueError:
+                parsed_group_index = -1
+            if 0 <= parsed_group_index <= 2_147_483_647:
+                group_index = parsed_group_index
+            else:
+                diagnostics.append(
+                    Diagnostic(
+                        Severity.WARNING,
+                        DiagnosticCode.UNSUPPORTED_ELEMENT_LINK_TYPE,
+                        (
+                            f"Ignored invalid link group_index "
+                            f"{raw_group_index!r} for {linked_uuid}"
+                        ),
+                        diagram_name,
+                        item_name,
+                    )
+                )
+        links.append(QetElementLink(linked_uuid, group_index))
+    return tuple(links)
+
+
+def _resolve_physical_devices(
+    builders: list[_ElementBuilder],
+    builders_by_uuid: dict[str, _ElementBuilder],
+    ambiguous_element_uuids: set[str],
+    diagnostics: list[Diagnostic],
+) -> None:
+    """Resolve physical devices without conflating unrelated QET links.
+
+    Only an explicit master/slave typed relationship can combine fragments.
+    Report links use the same XML storage and are deliberately ignored.
+    """
+
+    valid_builders: dict[str, _ElementBuilder] = {
+        uuid_value: builder
+        for uuid_value, builder in builders_by_uuid.items()
+        if uuid_value not in ambiguous_element_uuids
+        and "#duplicate-" not in uuid_value
+    }
+
+    for builder in builders:
+        role = builder.link_type.strip().casefold()
+        if (
+            builder.uuid in valid_builders
+            and role in {"", "simple", "master", "terminal"}
+        ):
+            builder.physical_device_uuid = builder.uuid
+            builder.physical_fragment_slot = role or "simple"
+
+    incoming: dict[str, list[tuple[_ElementBuilder, QetElementLink]]] = {}
+    for source in builders:
+        source_role = source.link_type.strip().casefold()
+        if source_role not in {"master", "slave"}:
+            continue
+        for link in source.links:
+            if link.element_uuid in ambiguous_element_uuids:
+                diagnostics.append(
+                    Diagnostic(
+                        Severity.ERROR,
+                        DiagnosticCode.UNSUPPORTED_ELEMENT_LINK_TYPE,
+                        (
+                            f"{source_role.title()} element "
+                            f"{source.label or source.uuid} links to ambiguous "
+                            f"element UUID {link.element_uuid}"
+                        ),
+                        source.diagram,
+                        source.label or source.uuid,
+                    )
+                )
+                continue
+            target = valid_builders.get(link.element_uuid)
+            if target is None:
+                diagnostics.append(
+                    Diagnostic(
+                        Severity.WARNING,
+                        DiagnosticCode.UNSUPPORTED_ELEMENT_LINK_TYPE,
+                        (
+                            f"{source_role.title()} element "
+                            f"{source.label or source.uuid} links to missing "
+                            f"element UUID {link.element_uuid}"
+                        ),
+                        source.diagram,
+                        source.label or source.uuid,
+                    )
+                )
+                continue
+            target_role = target.link_type.strip().casefold()
+            expected_role = "slave" if source_role == "master" else "master"
+            if target_role != expected_role:
+                diagnostics.append(
+                    Diagnostic(
+                        Severity.WARNING,
+                        DiagnosticCode.UNSUPPORTED_ELEMENT_LINK_TYPE,
+                        (
+                            f"Ignored invalid {source_role}-to-"
+                            f"{target_role or 'untyped'} element link "
+                            f"{source.uuid} -> {target.uuid}"
+                        ),
+                        source.diagram,
+                        source.label or source.uuid,
+                    )
+                )
+                continue
+            incoming.setdefault(target.uuid, []).append((source, link))
+
+    group_index_by_slave: dict[str, int | None] = {}
+    slaves_by_master: dict[str, list[_ElementBuilder]] = {}
+    for slave in builders:
+        if slave.link_type.strip().casefold() != "slave":
+            continue
+        if slave.uuid not in valid_builders:
+            continue
+
+        outgoing_masters = {
+            link.element_uuid
+            for link in slave.links
+            if (
+                (target := valid_builders.get(link.element_uuid)) is not None
+                and target.link_type.strip().casefold() == "master"
+            )
+        }
+        incoming_masters = {
+            source.uuid
+            for source, _link in incoming.get(slave.uuid, [])
+            if source.link_type.strip().casefold() == "master"
+        }
+        master_uuids = outgoing_masters | incoming_masters
+        if len(master_uuids) != 1:
+            severity = Severity.ERROR if master_uuids else Severity.WARNING
+            detail = (
+                "is not linked to a master"
+                if not master_uuids
+                else f"is linked to several masters: {', '.join(sorted(master_uuids))}"
+            )
+            diagnostics.append(
+                Diagnostic(
+                    severity,
+                    DiagnosticCode.UNSUPPORTED_ELEMENT_LINK_TYPE,
+                    (
+                        f"Slave element {slave.label or slave.uuid} {detail}; "
+                        "it is not a physical routing endpoint"
+                    ),
+                    slave.diagram,
+                    slave.label or slave.uuid,
+                )
+            )
+            continue
+
+        master_uuid = next(iter(master_uuids))
+        master = valid_builders[master_uuid]
+        slave.physical_device_uuid = master_uuid
+        slaves_by_master.setdefault(master_uuid, []).append(slave)
+
+        pair_links = [
+            link for link in slave.links if link.element_uuid == master_uuid
+        ]
+        pair_links.extend(
+            link for link in master.links if link.element_uuid == slave.uuid
+        )
+        group_indices = sorted(
+            {
+                link.group_index
+                for link in pair_links
+                if link.group_index is not None
+            }
+        )
+        if len(group_indices) > 1:
+            diagnostics.append(
+                Diagnostic(
+                    Severity.WARNING,
+                    DiagnosticCode.UNSUPPORTED_ELEMENT_LINK_TYPE,
+                    (
+                        f"Master/slave link {master.uuid} <-> {slave.uuid} "
+                        f"has conflicting group indices {group_indices}; "
+                        f"using {group_indices[0]}"
+                    ),
+                    slave.diagram,
+                    slave.label or slave.uuid,
+                )
+            )
+        group_index_by_slave[slave.uuid] = (
+            group_indices[0] if group_indices else None
+        )
+
+        if master_uuid not in outgoing_masters or master_uuid not in incoming_masters:
+            diagnostics.append(
+                Diagnostic(
+                    Severity.WARNING,
+                    DiagnosticCode.UNSUPPORTED_ELEMENT_LINK_TYPE,
+                    (
+                        f"Master/slave link {master.uuid} <-> {slave.uuid} "
+                        "is present in only one direction"
+                    ),
+                    slave.diagram,
+                    slave.label or slave.uuid,
+                )
+            )
+
+    for master_uuid, slaves in slaves_by_master.items():
+        master = valid_builders[master_uuid]
+        master_link_order: dict[str, int] = {}
+        for position, link in enumerate(master.links):
+            master_link_order.setdefault(link.element_uuid, position)
+        ordered_slaves = sorted(
+            slaves,
+            key=lambda slave: (
+                group_index_by_slave[slave.uuid] is None,
+                group_index_by_slave[slave.uuid]
+                if group_index_by_slave[slave.uuid] is not None
+                else 0,
+                slave.uuid not in master_link_order,
+                master_link_order.get(slave.uuid, 0),
+                slave.definition_uuid
+                or _normalize_type_path(slave.type_path)
+                or "untyped",
+                slave.uuid,
+            ),
+        )
+        occurrences: dict[tuple[str, int | None], int] = {}
+        for fragment_order, slave in enumerate(ordered_slaves, start=1):
+            definition_key = (
+                slave.definition_uuid
+                or _normalize_type_path(slave.type_path)
+                or "untyped"
+            )
+            group_index = group_index_by_slave[slave.uuid]
+            occurrence_key = definition_key, group_index
+            occurrence = occurrences.get(occurrence_key, 0) + 1
+            occurrences[occurrence_key] = occurrence
+            group_token = str(group_index) if group_index is not None else "none"
+            slave.physical_fragment_slot = (
+                f"{fragment_order:08d}|slave|definition={definition_key}"
+                f"|group={group_token}"
+                f"|occurrence={occurrence}"
+            )
+
+
 def _validate_project_version(raw: str) -> None:
     match = re.fullmatch(r"0\.(\d+)(?:\.\d+)*", raw)
     if match is None:
@@ -580,7 +863,7 @@ def _resolve_endpoint(
             if element_uuid in ambiguous_element_uuids
             else builders_by_uuid.get(element_uuid)
         )
-        if builder is not None and not _supports_physical_terminal(builder.link_type):
+        if builder is not None and not builder.physical_device_uuid:
             builder = None
         if (
             terminal is None
@@ -648,7 +931,16 @@ def _resolve_endpoint(
 
     normalized_legacy_id = _normalize_legacy_id(raw_terminal)
     terminal = legacy_terminals.get(normalized_legacy_id)
-    resolved = terminal is not None
+    builder = (
+        builders_by_uuid.get(terminal.element_uuid)
+        if terminal is not None
+        else None
+    )
+    resolved = (
+        terminal is not None
+        and builder is not None
+        and bool(builder.physical_device_uuid)
+    )
     if not resolved:
         diagnostics.append(
             Diagnostic(
@@ -793,7 +1085,15 @@ def _supports_physical_terminal(link_type: str) -> bool:
     # QET may add new schematic-only link types over time. Treating an
     # unfamiliar type as a physical device could silently create a wire to a
     # cross-reference symbol, so physical routing is intentionally opt-in.
-    return link_type.strip().casefold() in {"", "simple", "master", "terminal"}
+    # A slave is only enabled after _resolve_physical_devices verifies that it
+    # belongs to exactly one master.
+    return link_type.strip().casefold() in {
+        "",
+        "simple",
+        "master",
+        "slave",
+        "terminal",
+    }
 
 
 def _canonical_uuid(raw: str) -> str:
