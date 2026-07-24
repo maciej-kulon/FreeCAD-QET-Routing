@@ -116,6 +116,24 @@ It covers import, shared and overridden terminals, bounds clamping, corridor
 routing, failed-route cleanup, reactive cut length, schedule generation,
 reimport synchronization, save, and reopen.
 
+The GUI registration probe must run as a positional Python file so FreeCAD
+executes it after GUI and namespaced-addon initialization. On macOS:
+
+```shell
+open -n -W \
+  /Applications/FreeCAD.app \
+  --args \
+  --log-file /tmp/qet-routing-gui.log \
+  -P /path/to/FreeCAD-QET-Routing \
+  /path/to/FreeCAD-QET-Routing/tests/freecad_gui_smoke.py
+rg QET_ROUTING_GUI_SMOKE_OK /tmp/qet-routing-gui.log
+```
+
+The probe verifies that FreeCAD auto-discovered the workbench before the test
+imports any QET Routing module, activates it, checks all five commands, and
+then closes FreeCAD normally. FreeCAD 1.1.2 on macOS has an upstream shutdown
+abort in its `--run-test` path, so that option is intentionally not used here.
+
 ## Code layout
 
 - `freecad/QetRouting/qet/`: immutable QET model, safe parser, diagnostics
