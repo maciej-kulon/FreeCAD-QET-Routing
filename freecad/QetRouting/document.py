@@ -44,6 +44,21 @@ def _ensure_native_part_view_provider(obj: Any) -> tuple[Any | None, bool]:
     return view_object, missing_proxy
 
 
+def _set_terminal_marker_visibility(view_object: Any, visible: bool) -> None:
+    """Set marker visibility with FreeCAD's non-modifying property hint."""
+
+    if view_object is None:
+        return
+    try:
+        # Some FreeCAD view-provider builds expose no per-property status
+        # query, so setting the idempotent flag is the portable operation.
+        view_object.setPropertyStatus("Visibility", "NoModify")
+    except (AttributeError, RuntimeError, TypeError):
+        pass
+    if bool(view_object.Visibility) != bool(visible):
+        view_object.Visibility = bool(visible)
+
+
 @dataclass(frozen=True)
 class ImportSummary:
     element_count: int
@@ -161,6 +176,10 @@ class TerminalMarkerProxy:
     def onDocumentRestored(self, obj: Any) -> None:
         self._updating_placement = False
         self._repair_view_provider(obj)
+        _set_terminal_marker_visibility(
+            getattr(obj, "ViewObject", None),
+            False,
+        )
 
     @staticmethod
     def _repair_view_provider(obj: Any) -> None:
@@ -729,8 +748,8 @@ def _ensure_terminal_marker(
         )
     view_object, _repaired = _ensure_native_part_view_provider(obj)
     if view_object is not None:
+        _set_terminal_marker_visibility(view_object, False)
         if created or previous_sync_status == "Obsolete":
-            view_object.Visibility = True
             view_object.Selectable = True
         view_object.ShapeColor = (1.0, 0.55, 0.0)
         view_object.LineColor = (1.0, 0.85, 0.2)
@@ -908,9 +927,10 @@ def _mark_obsolete_import_records(
             "Obsolete",
             "QET Synchronization",
         )
-        view_object = getattr(obj, "ViewObject", None)
-        if view_object is not None:
-            view_object.Visibility = False
+        _set_terminal_marker_visibility(
+            getattr(obj, "ViewObject", None),
+            False,
+        )
     for obj in obsolete_conductors:
         _set_enumeration(
             obj,

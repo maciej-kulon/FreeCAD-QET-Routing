@@ -96,20 +96,84 @@ try:
         for actual, expected in zip(dimensions, (100.0, 50.0, 50.0))
     )
 
-    visual_objects = [
+    route_visuals = [
         obj
         for obj in probe_document.Objects
         if getattr(obj, "QET_ObjectKind", "")
-        in {"RoutingCorridor", "TerminalInstance", "WireRoute"}
+        in {"RoutingCorridor", "WireRoute"}
     ]
-    assert len(visual_objects) == 7
-    for visual in visual_objects:
+    assert len(route_visuals) == 3
+    for visual in route_visuals:
         assert visual.ViewObject.Proxy is not None
         assert visual.ViewObject.DisplayMode != "None"
         assert visual.ViewObject.DisplayMode in visual.ViewObject.listDisplayModes()
         assert visual.ViewObject.Visibility
         assert visual.ViewObject.Selectable
         assert visual.ViewObject.isVisible()
+
+    terminal_markers = [
+        obj
+        for obj in probe_document.Objects
+        if getattr(obj, "QET_ObjectKind", "") == "TerminalInstance"
+    ]
+    assert len(terminal_markers) == 4
+    k1_markers = [marker for marker in terminal_markers if marker.Owner is k1]
+    k2_markers = [marker for marker in terminal_markers if marker.Owner is k2]
+    assert len(k1_markers) == 2
+    assert len(k2_markers) == 2
+    for marker in terminal_markers:
+        assert marker.ViewObject.Proxy is not None
+        assert marker.ViewObject.DisplayMode != "None"
+        assert marker.ViewObject.DisplayMode in marker.ViewObject.listDisplayModes()
+        assert not marker.ViewObject.Visibility
+        assert marker.ViewObject.Selectable
+        assert not marker.ViewObject.isVisible()
+
+    probe_document.saveAs(str(probe_path))
+    gui_document = Gui.getDocument(probe_document.Name)
+    Gui.Selection.clearSelection()
+    Gui.updateGui()
+    gui_document.Modified = False
+    Gui.Selection.addSelection(k1)
+    gui_document.Modified = False
+    Gui.updateGui()
+    assert all(marker.ViewObject.isVisible() for marker in k1_markers)
+    assert all(not marker.ViewObject.isVisible() for marker in k2_markers)
+    assert not gui_document.Modified
+
+    Gui.Selection.addSelection(k2)
+    gui_document.Modified = False
+    Gui.updateGui()
+    assert all(marker.ViewObject.isVisible() for marker in terminal_markers)
+    assert not gui_document.Modified
+
+    Gui.Selection.clearSelection()
+    gui_document.Modified = False
+    Gui.updateGui()
+    assert all(not marker.ViewObject.isVisible() for marker in terminal_markers)
+    assert not gui_document.Modified
+
+    Gui.Selection.addSelection(k1_markers[0])
+    gui_document.Modified = False
+    Gui.updateGui()
+    assert k1_markers[0].ViewObject.isVisible()
+    assert all(
+        not marker.ViewObject.isVisible()
+        for marker in terminal_markers
+        if marker is not k1_markers[0]
+    )
+    assert not gui_document.Modified
+
+    Gui.Selection.clearSelection()
+    Gui.Selection.addSelection(k1)
+    gui_document.Modified = False
+    Gui.updateGui()
+    assert all(marker.ViewObject.isVisible() for marker in k1_markers)
+    gui_document.Modified = False
+    Gui.activateWorkbench("PartWorkbench")
+    Gui.updateGui()
+    assert all(not marker.ViewObject.isVisible() for marker in terminal_markers)
+    assert not gui_document.Modified
 
     corridor.ViewObject.Visibility = False
     Gui.updateGui()
@@ -134,6 +198,13 @@ try:
     probe_document_name = probe_document.Name
     restored_corridor = probe_document.getObject(corridor_name)
     restored_hidden_corridor = probe_document.getObject(second_corridor_name)
+    restored_terminals = [
+        obj
+        for obj in probe_document.Objects
+        if getattr(obj, "QET_ObjectKind", "") == "TerminalInstance"
+    ]
+    Gui.updateGui()
+    Gui.getDocument(probe_document.Name).Modified = False
     Gui.updateGui()
     assert restored_corridor.ViewObject.Proxy is not None
     assert restored_corridor.ViewObject.DisplayMode != "None"
@@ -142,6 +213,12 @@ try:
     assert not restored_hidden_corridor.ViewObject.Visibility
     assert not restored_hidden_corridor.ViewObject.Selectable
     assert not restored_hidden_corridor.ViewObject.isVisible()
+    assert all(
+        not terminal.ViewObject.Visibility
+        and not terminal.ViewObject.isVisible()
+        for terminal in restored_terminals
+    )
+    assert not Gui.getDocument(probe_document.Name).Modified
 
     FreeCAD.Console.PrintMessage("QET_ROUTING_GUI_SMOKE_OK\n")
 except Exception:

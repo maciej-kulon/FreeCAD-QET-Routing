@@ -70,6 +70,17 @@ class ImportQetCommand:
             )
             return
 
+        try:
+            from .terminal_visibility import refresh_terminal_visibility
+
+            refresh_terminal_visibility(document.Name)
+        except Exception:
+            App.Console.PrintWarning(
+                "QET Routing could not refresh terminal visibility:\n"
+                + traceback.format_exc()
+                + "\n"
+            )
+
         for diagnostic in result.diagnostics:
             message = (
                 f"QET Routing [{diagnostic.severity.value}] "
@@ -199,8 +210,8 @@ class PlaceTerminalCommand:
             "Pixmap": str(ICON_DIR / "PlaceTerminal.svg"),
             "MenuText": "Place terminal on selected geometry",
             "ToolTip": (
-                "Select one QET terminal and one vertex, edge, face, or object; "
-                "place the terminal at that geometry's center"
+                "Select a device to reveal its terminals, then select one "
+                "terminal and one target vertex, edge, face, or object"
             ),
         }
 
@@ -215,22 +226,14 @@ class PlaceTerminalCommand:
         from PySide import QtWidgets
 
         selections = Gui.Selection.getSelectionEx(App.ActiveDocument.Name, 0)
-        terminals = [
-            item.Object
-            for item in selections
-            if getattr(item.Object, "QET_ObjectKind", "") == "TerminalInstance"
-        ]
-        references = [
-            item
-            for item in selections
-            if getattr(item.Object, "QET_ObjectKind", "") != "TerminalInstance"
-        ]
+        terminals, references = _terminal_placement_selections(selections)
         if len(terminals) != 1 or len(references) != 1:
             QtWidgets.QMessageBox.information(
                 None,
                 "Place QET terminal",
                 (
-                    "Select exactly one orange QET terminal and, while holding Ctrl, "
+                    "Select the owning device to reveal its terminals. Then, "
+                    "while holding Ctrl, select exactly one orange terminal and "
                     "one target vertex, edge, face, or object."
                 ),
             )
@@ -386,6 +389,48 @@ def _selection_world_point(selection: object) -> object | None:
     except (AttributeError, RuntimeError):
         placement = obj.Placement
     return placement.multVec(local_point)
+
+
+def _terminal_placement_selections(
+    selections: list[object] | tuple[object, ...],
+) -> tuple[list[object], list[object]]:
+    """Separate a terminal and its target from selections used to reveal it."""
+
+    terminals = [
+        item.Object
+        for item in selections
+        if getattr(item.Object, "QET_ObjectKind", "") == "TerminalInstance"
+    ]
+    references = [
+        item
+        for item in selections
+        if getattr(item.Object, "QET_ObjectKind", "") != "TerminalInstance"
+    ]
+    if len(terminals) != 1 or len(references) <= 1:
+        return terminals, references
+
+    terminal = terminals[0]
+    filtered = [
+        item
+        for item in references
+        if not _is_terminal_reveal_selection(item, terminal)
+    ]
+    return terminals, filtered or references
+
+
+def _is_terminal_reveal_selection(selection: object, terminal: object) -> bool:
+    if (
+        getattr(selection, "SubObjects", ())
+        or getattr(selection, "SubElementNames", ())
+    ):
+        return False
+    selected_object = getattr(selection, "Object", None)
+    if selected_object is getattr(terminal, "Owner", None):
+        return True
+    return (
+        getattr(selected_object, "QET_ObjectKind", "") == "DeviceBinding"
+        and terminal in getattr(selected_object, "Group", ())
+    )
 
 
 def _selection_world_vertices(

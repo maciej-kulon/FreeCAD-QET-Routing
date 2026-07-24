@@ -19,10 +19,14 @@ class QetRoutingWorkbench(Gui.Workbench):
         self.appendMenu("QET Routing", commands.COMMANDS)
 
     def Activated(self) -> None:
-        return None
+        from .terminal_visibility import activate_terminal_visibility
+
+        activate_terminal_visibility()
 
     def Deactivated(self) -> None:
-        return None
+        from .terminal_visibility import deactivate_terminal_visibility
+
+        deactivate_terminal_visibility()
 
     def GetClassName(self) -> str:
         return "Gui::PythonWorkbench"

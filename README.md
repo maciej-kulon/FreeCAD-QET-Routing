@@ -17,6 +17,8 @@ patch of FreeCAD.
   folios;
 - creates reusable part types and shared terminal definitions;
 - initializes terminals at the center of the matched part;
+- renders terminal markers only for the currently selected physical devices,
+  while retaining an individually selected terminal for editing;
 - propagates an inherited terminal move to every instance of the same part
   type, with an instance override when required;
 - clamps moved terminals to the owning part's local bounding box;
@@ -59,7 +61,8 @@ search path. FreeCAD 1.0 discovers the namespaced
 
 1. Give each physical FreeCAD part the exact `Label` used by its QET element.
 2. Run **QET Routing → Import QElectroTech project**.
-3. Ctrl-select one orange terminal plus a target vertex, edge, face, or object,
+3. Select a physical device to reveal only its orange terminal markers. While
+   holding Ctrl, add one terminal and a target vertex, edge, face, or object,
    then run **Place terminal on selected geometry**. Editing the terminal's
    `Placement` directly also works. Its shared `LocalPosition` updates every
    matching part instance; set `PositionMode` to `Overridden` for an exception.
@@ -143,9 +146,10 @@ rg QET_ROUTING_GUI_SMOKE_OK /tmp/qet-routing-gui.log
 
 The probe verifies that FreeCAD auto-discovered the workbench before the test
 imports any QET Routing module, activates it, checks all six commands, creates
-a corridor from selected vertices, and then closes FreeCAD normally. FreeCAD
-1.1.2 on macOS has an upstream shutdown
-abort in its `--run-test` path, so that option is intentionally not used here.
+a corridor from selected vertices, checks selection-scoped terminal rendering
+without creating a save prompt, and then closes FreeCAD normally. FreeCAD
+1.1.2 on macOS has an upstream shutdown abort in its `--run-test` path, so that
+option is intentionally not used here.
 
 ## Code layout
 
